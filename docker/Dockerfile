@@ -1,12 +1,15 @@
+# Base image with CUDA support
 #FROM nvidia/cuda:9.1-cudnn7-devel-ubuntu16.04
 FROM jarvice/app-cuda-9.1:9.1-cudnn7-devel-ubuntu16.04
 
+# Install necessary system packages
 RUN apt-get update && \
 	apt-get install -y --no-install-recommends \
 		build-essential \
 		curl && \
 	rm -rf /var/lib/apt/lists/*
 
+# Install Miniconda and Python dependencies
 RUN curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o miniconda.sh && \
 	chmod +x miniconda.sh && \
 	./miniconda.sh -b -p /opt/conda && \
@@ -15,6 +18,7 @@ RUN curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -
 	/opt/conda/bin/conda clean -ya
 ENV PATH /opt/conda/bin:$PATH
 
+# Install LKH (for VRP algorithm)
 RUN curl http://akira.ruc.dk/~keld/research/LKH-3/LKH-3.0.5.tgz -o LKH-3.0.5.tar.gz && \
 	tar zxf LKH-3.0.5.tar.gz && \
 	cd LKH-3.0.5 && \
@@ -23,8 +27,19 @@ RUN curl http://akira.ruc.dk/~keld/research/LKH-3/LKH-3.0.5.tgz -o LKH-3.0.5.tar
 	cd .. && \
 	rm -rf LKH-3.0.5
 
+
+# Set working directory inside the container
 WORKDIR /py_ws/marpdan
+
+# Ensure Python path is properly set
 RUN touch ../__init__.py
 ENV PYTHONPATH /py_ws:$PYTHONPATH
+
+# Copy the project files into the container
 COPY . .
+
+# Install dependencies from requirements.txt
+RUN /opt/conda/bin/pip install --no-cache-dir -r requirements.txt
+
+# Expose volume for output
 VOLUME /py_ws/marpdan/output
