@@ -1,4 +1,5 @@
-FROM nvidia/cuda:9.1-cudnn7-devel-ubuntu16.04
+#FROM nvidia/cuda:9.1-cudnn7-devel-ubuntu16.04
+FROM jarvice/app-cuda-9.1:9.1-cudnn7-devel-ubuntu16.04
 
 RUN apt-get update && \
 	apt-get install -y --no-install-recommends \
