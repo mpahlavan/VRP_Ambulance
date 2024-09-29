@@ -17,10 +17,10 @@ torch.manual_seed(SEED)
 
 # CVRP Data
 for n,m in ((10,2), (20,4), (50,10)):
-    out_dir = "cvrp_n{}m{}".format(n, m)
+    out_dir = os.path.join("data/","cvrp_n{}m{}".format(n, m))
     os.makedirs(out_dir, exist_ok = True)
 
-    data = VRPTW_Dataset.generate(BATCH_SIZE, n, m, tw_ratio = 0.0, cust_dur_range = (0,1))
+    data = VRP_Dataset.generate(BATCH_SIZE, n, m)
 
     x_scl = data.nodes[:,:,:2].max() - data.nodes[:,:,:2].min()
     with open(os.path.join(out_dir, "kool_data.pkl"), 'wb') as f:
@@ -32,7 +32,7 @@ for n,m in ((10,2), (20,4), (50,10)):
             )), f, pickle.HIGHEST_PROTOCOL)
 
     data.normalize()
-    torch.save(data, os.path.join("data", out_dir, "norm_data.pyth"))
+    torch.save(data, os.path.join(out_dir, "norm_data.pyth"))
 
 # CVRPTW Data
 for n,m in ((10,2), (20,4), (50,10)):
@@ -51,7 +51,7 @@ for n,m in ((10,2), (20,4), (50,10)):
     os.makedirs(out_dir, exist_ok = True)
 
     data = VRPTW_Dataset.generate(BATCH_SIZE, n, m, tw_ratio = [0.7,0.8,1.0])
-
+           
     data.normalize()
     torch.save(data, os.path.join(out_dir, "norm_data.pyth"))
 
