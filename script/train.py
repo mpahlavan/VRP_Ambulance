@@ -218,8 +218,8 @@ def main(args):
     # CHECKPOINTING
     verbose_print("Creating output dir...",
         end = " ", flush = True)
-    args.output_dir = "./output/{}n{}m{}_{}".format(
-            args.problem_type.upper(),
+    args.output_dir = "./output/c{}_n{}m{}_{}".format(
+            args.problem_type,
             args.customers_count,
             args.vehicles_count,
             time.strftime("%y%m%d-%H%M")
