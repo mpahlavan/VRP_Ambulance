@@ -64,7 +64,8 @@ Follow these steps to set up the project:
    - Press **Ctrl+Shift+P**.
    - Select **Dev Container: Attach to Running Container...**.
    - Choose **/vrp_ambulance_container**.
-
+   - open folder **./py_ws/marpdan/**.
+   
 You’re now inside the Docker container, ready to execute the project code directly in this isolated environment.
 
 ## Project Workflow

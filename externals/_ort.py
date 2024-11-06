@@ -1,5 +1,5 @@
-from mardan.dep import ORTOOLS_ENABLED, pywrapcp, routing_enums_pb2
-from mardan.dep import tqdm
+from marpdan.dep import ORTOOLS_ENABLED, pywrapcp, routing_enums_pb2
+from marpdan.dep import tqdm
 
 from multiprocessing import Pool
 

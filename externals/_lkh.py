@@ -1,5 +1,5 @@
-from mardan.dep import LKH_ENABLED, LKH_BIN
-from mardan.dep import tqdm
+from marpdan.dep import LKH_ENABLED, LKH_BIN
+from marpdan.dep import tqdm
 
 from multiprocessing import Pool
 import subprocess
