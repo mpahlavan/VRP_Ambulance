@@ -28,12 +28,12 @@ VACANCY_COEFFICIENT = 100            # Penalty coefficient for empty capacities
 out_dir = "data/"
 
 # CVRP Data
+
 for n_patients, n_ambulances in zip(PATIENT_COUNTS, AMBULANCE_COUNTS):
     problem_dir = os.path.join(out_dir, f"cvrp_n{n_patients}m{n_ambulances}")
     os.makedirs(problem_dir, exist_ok=True)
 
     data = VRP_Dataset.generate(BATCH_SIZE, n_patients, n_ambulances)
-
     x_scl = data.nodes[:, :, :2].max() - data.nodes[:, :, :2].min()
     with open(os.path.join(problem_dir, "kool_data.pkl"), 'wb') as f:
         pickle.dump(list(zip(
@@ -45,6 +45,7 @@ for n_patients, n_ambulances in zip(PATIENT_COUNTS, AMBULANCE_COUNTS):
 
     data.normalize()
     torch.save(data, os.path.join(problem_dir, "norm_data.pyth"))
+
 
 # CVRPTW Data
 for n_patients, n_ambulances in zip(PATIENT_COUNTS, AMBULANCE_COUNTS):
@@ -62,7 +63,6 @@ for n_patients, n_ambulances in zip(PATIENT_COUNTS, AMBULANCE_COUNTS):
     os.makedirs(problem_dir, exist_ok=True)
 
     data = VRPTW_Dataset.generate(BATCH_SIZE, n_patients, n_ambulances, tw_ratio=[0.7, 0.8, 1.0])
-
     data.normalize()
     torch.save(data, os.path.join(problem_dir, "norm_data.pyth"))
 
@@ -84,7 +84,7 @@ for n_patients, n_ambulances in zip(PATIENT_COUNTS, AMBULANCE_COUNTS):
         "routes": ort_routes,
     }, os.path.join(problem_dir, "ort.pyth"))
 
-# Generate data for different problem sizes
+# ARP Data 
 for n_patients, n_ambulances in zip(PATIENT_COUNTS, AMBULANCE_COUNTS):
     problem_name = f"arp_n{n_patients}_m{n_ambulances}"
     problem_dir = os.path.join(out_dir, problem_name)
@@ -116,11 +116,6 @@ for n_patients, n_ambulances in zip(PATIENT_COUNTS, AMBULANCE_COUNTS):
         vacancy_coefficient=VACANCY_COEFFICIENT
     )
 
-    # Optionally, generate initial solutions or routes using heuristics or solvers
-    # For example, you could use a solver like OR-Tools if available
-    # Since ARP is a specialized problem, standard VRP solvers may not directly apply
-    # Here, we'll skip route generation and focus on data preparation
-
     print(f"Generated data for {problem_name} and saved to {problem_dir}")
 
-print("Data generation for ARP completed.")
+
