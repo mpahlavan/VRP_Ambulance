@@ -13,15 +13,19 @@ class CriticBaseline(Baseline):
     def eval_step(self, vrp_dynamics, learner_compat, cust_idx):
         compat = learner_compat.clone()
         compat[vrp_dynamics.cur_veh_mask] = 0
+
         val = self.project(compat)
         if self.use_qval:
             val = val.gather(2, cust_idx.unsqueeze(1).expand(-1,1,-1))
         return val.squeeze(1)
 
     def __call__(self, vrp_dynamics):
-        self.learner._encode_customers(vrp_dynamics.nodes)
+        mask = vrp_dynamics.mask if hasattr(vrp_dynamics, 'mask') else None
+        self.learner._encode_customers(vrp_dynamics.nodes, mask )
+        
         vrp_dynamics.reset()
         actions, logps, rewards, bl_vals = [], [], [], []
+        
         while not vrp_dynamics.done:
             veh_repr = self.learner._repr_vehicle(
                     vrp_dynamics.vehicles,
@@ -29,13 +33,39 @@ class CriticBaseline(Baseline):
                     vrp_dynamics.mask)
             compat = self.learner._score_customers(veh_repr)
             logp = self.learner._get_logp(compat, vrp_dynamics.cur_veh_mask)
-            cust_idx = logp.exp().multinomial(1)
+            #cust_idx = logp.exp().multinomial(1)
+            
+            # Safe probability calculation
+            probs = logp.exp()  # Convert log probabilities to probabilities
+            
+            # Handle numerical issues
+            probs[torch.isnan(probs) | torch.isinf(probs)] = 0.0
+            probs[probs < 0] = 0.0
+            
+            # If no valid actions, force return to depot
+            if probs.sum() < 1e-10:
+                cust_idx = torch.zeros_like(vrp_dynamics.cur_veh_idx)
+            else:
+                # Normalize probabilities
+                probs = probs / probs.sum(dim=1, keepdim=True)
+                
+                # Ensure depot is always an option with small probability
+                probs[:, 0] = probs[:, 0].clone() + 1e-6
+                probs = probs / probs.sum(dim=1, keepdim=True)
+                
+                try:
+                    cust_idx = probs.multinomial(1)
+                except RuntimeError:
+                    # Fallback to depot if sampling fails
+                    cust_idx = torch.zeros_like(vrp_dynamics.cur_veh_idx)
+
             if not(self.use_cumul and bl_vals):
                 bl_vals.append( self.eval_step(vrp_dynamics, compat, cust_idx) )
+            
             actions.append( (vrp_dynamics.cur_veh_idx, cust_idx) )
             logps.append( logp.gather(1, cust_idx) )
-            r = vrp_dynamics.step(cust_idx)
-            rewards.append(r)
+            rewards.append(vrp_dynamics.step(cust_idx))
+
         if self.use_cumul:
             rewards = torch.stack(rewards).sum(dim = 0)
             bl_vals = bl_vals[0]

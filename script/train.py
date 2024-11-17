@@ -64,7 +64,7 @@ def train_epoch(args, data, Environment, env_params, bl_wrapped_learner, optim, 
 
 def test_epoch(args, test_env, learner, ref_costs):
     learner.eval()
-    if args.problem_type[0] == "s":
+    if args.problem_type[0] == "s" or args.problem_type[0] == "p":
         costs = test_env.nodes.new_zeros(test_env.minibatch_size)
         for _ in range(100):
             _, _, rewards = learner(test_env)
@@ -96,7 +96,8 @@ def main(args):
             "vrp": VRP_Dataset,
             "vrptw": VRPTW_Dataset,
             "svrptw": VRPTW_Dataset,
-            "sdvrptw": SDVRPTW_Dataset
+            "sdvrptw": SDVRPTW_Dataset,
+            "pvrp": PerishableVRP_Dataset
             }.get(args.problem_type)
     gen_params = [
             args.customers_count,
@@ -107,7 +108,7 @@ def main(args):
             args.loc_range,
             args.dem_range
             ]
-    if args.problem_type != "vrp":
+    if args.problem_type !="vrp" and  args.problem_type !="pvrp":
         gen_params.extend( [args.horizon, args.dur_range, args.tw_ratio, args.tw_range] )
     if args.problem_type == "sdvrptw":
         gen_params.extend( [args.deg_of_dyna, args.appear_early_ratio] )
@@ -147,10 +148,11 @@ def main(args):
             "vrp": VRP_Environment,
             "vrptw": VRPTW_Environment,
             "svrptw": SVRPTW_Environment,
-            "sdvrptw": SDVRPTW_Environment
+            "sdvrptw": SDVRPTW_Environment,
+            "pvrp": PerishableVRP_Environment
             }.get(args.problem_type)
     env_params = [args.pending_cost]
-    if args.problem_type != "vrp":
+    if args.problem_type != "vrp" and args.problem_type != "pvrp":
         env_params.append(args.late_cost)
         if args.problem_type != "vrptw":
             env_params.extend( [args.speed_var, args.late_prob, args.slow_down, args.late_var] )
@@ -240,6 +242,7 @@ def main(args):
         for ep in range(start_ep, args.epoch_count):
             train_stats.append( train_epoch(args, train_data, Environment, env_params, baseline, optim, dev, ep) )
             if ref_routes is not None:
+                #pass
                 test_stats.append( test_epoch(args, test_env, learner, ref_costs) )
 
             if args.rate_decay is not None:

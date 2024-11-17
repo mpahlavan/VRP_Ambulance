@@ -6,3 +6,6 @@ from ._env       import VRP_Environment
 from ._env_tw    import VRPTW_Environment
 from ._env_stw   import SVRPTW_Environment
 from ._env_sdtw  import SDVRPTW_Environment
+
+from ._data_perish import PerishableVRP_Dataset
+from ._env_perish  import PerishableVRP_Environment
