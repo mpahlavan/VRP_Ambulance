@@ -3,16 +3,18 @@ import sys
 import json
 
 CONFIG_FILE = None
-VERBOSE = False
-NO_CUDA = False
+VERBOSE = True
+NO_CUDA = True
 SEED = None
 
-PROBLEM = "vrp"
+
+PROBLEM = "pvrp"
 CUST_COUNT = 10
 VEH_COUNT = 2
-VEH_CAPA = 200
+VEH_CAPA = 5
 VEH_SPEED = 1
 HORIZON = 480
+
 MIN_CUST_COUNT = None
 LOC_RANGE = (0,101)
 DEM_RANGE = (5,41)
@@ -21,6 +23,7 @@ TW_RATIO = (0.25,0.5,0.75,1.0)
 TW_RANGE = (30,91)
 DEG_OF_DYN = (0.1,0.25,0.5,0.75)
 APPEAR_EARLY_RATIO = (0.0,0.5,0.75,1.0)
+SPOILAGE_RANGE = (120,240)
 
 PEND_COST = 2
 PEND_GROWTH = None
@@ -53,7 +56,7 @@ CRITIC_USE_QVAL = False
 CRITIC_LR = 0.001
 CRITIC_DECAY = None
 
-TEST_BATCH_SIZE = 128
+TEST_BATCH_SIZE = 512
 
 OUTPUT_DIR = None
 RESUME_STATE = None
@@ -75,13 +78,14 @@ def parse_args(argv = None):
 
     group = parser.add_argument_group("Data generation parameters")
     group.add_argument("--problem-type", "-p", type = str,
-            choices = ["vrp", "vrptw", "svrptw", "sdvrptw"], default = PROBLEM)
+            choices = ["vrp", "vrptw", "svrptw", "sdvrptw", "pvrp"], default = PROBLEM)
     group.add_argument("--customers-count", "-n", type = int, default = CUST_COUNT)
     group.add_argument("--vehicles-count", "-m", type = int, default = VEH_COUNT)
     group.add_argument("--veh-capa", type = int, default = VEH_CAPA)
     group.add_argument("--veh-speed", type = int, default = VEH_SPEED)
     group.add_argument("--horizon", type = int, default = HORIZON)
     group.add_argument("--min-cust-count", type = int, default = MIN_CUST_COUNT)
+    group.add_argument("--spoilage-range", type = int, default = SPOILAGE_RANGE)
     group.add_argument("--loc-range", type = int, nargs = 2, default = LOC_RANGE)
     group.add_argument("--dem-range", type = int, nargs = 2, default = DEM_RANGE)
     group.add_argument("--dur-range", type = int, nargs = 2, default = DUR_RANGE)

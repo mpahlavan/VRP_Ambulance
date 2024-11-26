@@ -6,8 +6,7 @@ from marpdan.dep import tqdm
 import torch
 
 for pb in ("cvrp", "cvrptw"):
-    for n in (10, 20, 50):
-        m = n // 5
+    for n,m in ((10,2),(20,4)): # 20, 50):
         out_dir = "./results/{}_n{}m{}/".format(pb, n, m)
         data_path = "./data/{}_n{}m{}/norm_data.pyth".format(pb, n, m)
 

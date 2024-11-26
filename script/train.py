@@ -93,11 +93,11 @@ def main(args):
 
     # PROBLEM
     Dataset = {
-            "vrp": VRP_Dataset,
+            "pvrp": PVRP_Dataset,
             "vrptw": VRPTW_Dataset,
             "svrptw": VRPTW_Dataset,
             "sdvrptw": SDVRPTW_Dataset,
-            "pvrp": PerishableVRP_Dataset
+            "pvrp": PVRP_Dataset
             }.get(args.problem_type)
     gen_params = [
             args.customers_count,
@@ -112,6 +112,7 @@ def main(args):
         gen_params.extend( [args.horizon, args.dur_range, args.tw_ratio, args.tw_range] )
     if args.problem_type == "sdvrptw":
         gen_params.extend( [args.deg_of_dyna, args.appear_early_ratio] )
+        
 
     # TRAIN DATA
     verbose_print("Generating {} {} samples of training data...".format(
@@ -149,7 +150,7 @@ def main(args):
             "vrptw": VRPTW_Environment,
             "svrptw": SVRPTW_Environment,
             "sdvrptw": SDVRPTW_Environment,
-            "pvrp": PerishableVRP_Environment
+            "pvrp": PVRP_Environment
             }.get(args.problem_type)
     env_params = [args.pending_cost]
     if args.problem_type != "vrp" and args.problem_type != "pvrp":
@@ -242,7 +243,6 @@ def main(args):
         for ep in range(start_ep, args.epoch_count):
             train_stats.append( train_epoch(args, train_data, Environment, env_params, baseline, optim, dev, ep) )
             if ref_routes is not None:
-                #pass
                 test_stats.append( test_epoch(args, test_env, learner, ref_costs) )
 
             if args.rate_decay is not None:

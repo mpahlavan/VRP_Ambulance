@@ -16,13 +16,13 @@ torch.manual_seed(SEED)
 
 # Generate data for Perishable VRP
 for n, m in ((10,2), (20,4)):#, (50,10)
-    out_dir = "data/perishable_vrp_n{}m{}".format(n, m)
+    out_dir = "data/pvrp_n{}m{}".format(n, m)
     os.makedirs(out_dir, exist_ok=True)
 
     # Generate for different spoilage time ranges
     for spoil_min, spoil_max in SPOILAGE_RANGES:
         # Basic dataset with unit demands and spoilage times
-        data = PerishableVRP_Dataset.generate(BATCH_SIZE, n, m)
+        data = PVRP_Dataset.generate(BATCH_SIZE, n, m)
         
         # Normalize and save
         data.normalize()
@@ -31,7 +31,7 @@ for n, m in ((10,2), (20,4)):#, (50,10)
         # Get baseline solutions using OR-Tools
         ort_routes = ort_solve(data)
         
-        env = PerishableVRP_Environment(data)
+        env = PVRP_Environment(data)
         ort_costs = eval_apriori_routes(env, ort_routes, 1)
 
         torch.save({

@@ -148,7 +148,8 @@ class _MHA_V2(nn.Module):
             v_proj = self.value_project(values).view(
                     -1, l_kv, self.head_count, self.value_size_per_head).permute(0,2,1,3)
 
-        weights = q_proj.matmul( k_proj )
+        #weights = q_proj.matmul( k_proj )
+        weights = torch.matmul(q_proj, k_proj) 
         weights *= self._inv_sqrt_d
         if mask is not None:
             if mask.numel() * self.head_count == weights.numel(): # one mask per query

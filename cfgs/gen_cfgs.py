@@ -1,7 +1,7 @@
 import json
 import random
 
-pb_types = ["vrptw", "svrptw", "sdvrptw"]
+pb_types = ["pvrp", "vrptw", "svrptw", "sdvrptw"]
 counts = ((10,2), (20,4), (50,10))
 runs = 5
 epochs = 20

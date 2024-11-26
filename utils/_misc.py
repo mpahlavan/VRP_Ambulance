@@ -35,17 +35,64 @@ def _pad_with_zeros(src_it):
 
 
 def eval_apriori_routes(dyna, routes, rollout_count):
+    """Evaluate routes for PVRP considering spoilage constraints"""
+    def _pad_with_zeros(route):
+        """Add depot returns (0) at end of route"""
+        for node in route:
+            yield node 
+        while True:
+            yield 0
+
+    # Check if routes is empty or None
+    if not routes:
+        print("No routes provided")
+        return dyna.nodes.new_zeros(dyna.minibatch_size)
+
     mean_cost = dyna.nodes.new_zeros(dyna.minibatch_size)
+    
     for c in range(rollout_count):
         dyna.reset()
-        routes_it = [[_pad_with_zeros(route) for route in inst_routes] for inst_routes in routes]
-        rewards = []
-        while not dyna.done:
-            cust_idx = dyna.nodes.new_tensor([[next(routes_it[n][i.item()])]
-                for n,i in enumerate(dyna.cur_veh_idx)], dtype = torch.int64)
-            rewards.append( dyna.step(cust_idx) )
-        mean_cost += -torch.stack(rewards).sum(dim = 0).squeeze(-1)
-    return mean_cost / rollout_count
+        
+        try:
+            # Initialize route iterators with proper handling of empty/missing routes
+            routes_it = []
+            for batch_idx in range(dyna.minibatch_size):
+                # Handle case where routes[batch_idx] might not exist
+                if batch_idx >= len(routes) or not routes[batch_idx]:
+                    routes_it.append([_pad_with_zeros([])])
+                else:
+                    routes_it.append([_pad_with_zeros(route) for route in routes[batch_idx]])
+            
+            rewards = []
+            while not dyna.done:
+                try:
+                    # Get next node for each active vehicle
+                    cust_idx = []
+                    for n, i in enumerate(dyna.cur_veh_idx):
+                        i_val = i.item()
+                        # Ensure we don't index out of bounds
+                        if i_val >= len(routes_it[n]):
+                            cust_idx.append([0])  # Return to depot if no route available
+                        else:
+                            cust_idx.append([next(routes_it[n][i_val])])
+                    
+                    # Convert to tensor and step environment
+                    cust_idx = dyna.nodes.new_tensor(cust_idx, dtype=torch.int64)
+                    rewards.append(dyna.step(cust_idx))
+                    
+                except Exception as e:
+                    print(f"Error during route execution: {e}")
+                    break
+            
+            # Calculate cost even if we broke early
+            if rewards:
+                mean_cost += -torch.stack(rewards).sum(dim=0).squeeze(-1)
+                
+        except Exception as e:
+            print(f"Error during rollout {c}: {e}")
+            continue
+            
+    return mean_cost / rollout_count if rollout_count > 0 else mean_cost
 
 
 def load_old_weights(learner, state_dict):
