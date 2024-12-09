@@ -222,7 +222,7 @@ def main(args):
     verbose_print("Creating output dir...",
         end = " ", flush = True)
     args.output_dir = "./output/{}n{}m{}_{}".format(
-            args.problem_type.upper(),
+            args.problem_type,
             args.customers_count,
             args.vehicles_count,
             time.strftime("%y%m%d-%H%M")

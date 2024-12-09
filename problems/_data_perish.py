@@ -17,7 +17,7 @@ class PVRP_Dataset(Dataset):
             min_cust_count = None,
             cust_loc_range = (0,101),
             horizon = 480,
-            spoilage_range = (120,240)  # Time window for spoilage
+            spoilage_range = (240,360)  # Time window for spoilage
             ):
         size = (batch_size, cust_count, 1)
 

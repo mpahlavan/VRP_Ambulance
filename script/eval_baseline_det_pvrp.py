@@ -9,12 +9,13 @@ import os
 def main(args):
     out_dir = f"./results/{args.problem_type}_n{args.customers_count}m{args.vehicles_count}/"
     os.makedirs(out_dir, exist_ok = True)
-    data_path = f"./data/{args.problem_type}_n{args.customers_count}m{args.vehicles_count}/norm_data_spoil_120_240.pyth"
-
-    print(f" {args.problem_type}{args.customers_count}{args.vehicles_count} ".center(96, '-'))
+    data_path = f"./data/{args.problem_type}_n{args.customers_count}m{args.vehicles_count}/norm_data_spoil_{args.spoilage_range[0]}_{args.spoilage_range[1]}.pyth"
+    
+    print(f" {args.problem_type}n{args.customers_count}m{args.vehicles_count} ".center(96, '-'))
 
     # Load and unnormalize data
     data = torch.load(data_path)
+    torch.save(data, "updated_file.pyth")
     nodes = data.nodes.clone()
     nodes[:,:,:2] *= 100  # Unnormalize coordinates
     nodes[:,:,2] *= 200   # Unnormalize demand (always 1 for PVRP)
@@ -23,12 +24,15 @@ def main(args):
     # Create unnormalized dataset
     #veh_count,  nodes
     unnormed = PVRP_Dataset(data.veh_count, data.veh_capa, data.veh_speed, nodes)
-    env = PVRP_Environment(data)
 
+    env = PVRP_Environment(data)
+    
+    '''
     # Solve with LKH
     lkh_routes = lkh_solve(unnormed)
     lkh_costs = eval_apriori_routes(env, lkh_routes, 1)
     torch.save({"costs": lkh_costs, "routes": lkh_routes}, out_dir + "lkh.pyth")
+    '''
 
     # Solve with OR-Tools
     ort_routes = ort_solve(unnormed)

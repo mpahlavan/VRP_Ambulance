@@ -1,123 +1,186 @@
 from marpdan.dep import ORTOOLS_ENABLED, pywrapcp, routing_enums_pb2
 from marpdan.dep import tqdm
-
 from multiprocessing import Pool
 
-def print_solution(data, manager, routing, solution):
-    """Prints solution on console."""
-    print(f"Objective: {solution.ObjectiveValue()}")
-    total_distance = 0
-    total_load = 0
-    for vehicle_id in range(data["num_vehicles"]):
-        index = routing.Start(vehicle_id)
-        plan_output = f"Route for vehicle {vehicle_id}:\n"
-        route_distance = 0
-        route_load = 0
-        while not routing.IsEnd(index):
-            node_index = manager.IndexToNode(index)
-            route_load += data["demands"][node_index]
-            plan_output += f" {node_index} Load({route_load}) -> "
-            previous_index = index
-            index = solution.Value(routing.NextVar(index))
-            route_distance += routing.GetArcCostForVehicle(
-                previous_index, index, vehicle_id
-            )
-        plan_output += f" {manager.IndexToNode(index)} Load({route_load})\n"
-        plan_output += f"Distance of the route: {route_distance}m\n"
-        plan_output += f"Load of the route: {route_load}\n"
-        print(plan_output)
-        total_distance += route_distance
-        total_load += route_load
-    print(f"Total distance of all routes: {total_distance}m")
-    print(f"Total load of all routes: {total_load}")
-
-
-def _solve_cp(nodes, veh_count, veh_capa, veh_speed, late_cost):
-
-    # Create the routing index manager.
+def _solve_cp(nodes, veh_count, veh_capa, veh_speed, spoilage_penalty):
+    """Solve single PVRP instance using OR-Tools"""
+    
+    # Create routing manager
     manager = pywrapcp.RoutingIndexManager(nodes.size(0), veh_count, 0)
-
-    # Create Routing Model.
     routing = pywrapcp.RoutingModel(manager)
 
-    # Create and register a transit callback.
+    # Distance callback
     def distance_callback(from_index, to_index):
-        """Returns the distance between the two nodes."""
-        # Convert from routing variable Index to distance matrix NodeIndex.
         from_node = manager.IndexToNode(from_index)
         to_node = manager.IndexToNode(to_index)
-        return nodes[from_node, :2].sub(nodes[to_node, :2]).pow(2).sum().pow(0.5)
-   
+        return int(nodes[from_node, :2].sub(nodes[to_node, :2]).pow(2).sum().pow(0.5))
 
-    transit_callback_index = routing.RegisterTransitCallback(distance_callback)
+    dist_callback_idx = routing.RegisterTransitCallback(distance_callback)
+    routing.SetArcCostEvaluatorOfAllVehicles(dist_callback_idx)
 
-    # Define cost of each arc.
-    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
-
-    # Add Capacity constraint.
-    def demand_callback(from_index):
-        """Returns the demand of the node."""
-        # Convert from routing variable Index to demands NodeIndex.
+    # Time callback including travel times
+    def time_callback(from_index, to_index):
         from_node = manager.IndexToNode(from_index)
-        return nodes[from_node,2]
+        to_node = manager.IndexToNode(to_index)
+        # Travel time between nodes
+        return int(distance_callback(from_index, to_index) / veh_speed)
 
+    time_callback_idx = routing.RegisterTransitCallback(time_callback)
 
-    demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
-    routing.AddDimensionWithVehicleCapacity(
-        demand_callback_index,
-        0,  # null capacity slack
-        [veh_capa for _ in range(veh_count)],  # vehicle maximum capacities
+    # Add Time dimension
+    max_time = int(nodes[:, 3].max().item())
+    routing.AddDimension(
+        time_callback_idx,
+        0,  # no slack
+        max_time,  # maximum time (spoilage deadline)
         True,  # start cumul to zero
-        "Capacity",
+        "Time"
     )
+    time_dimension = routing.GetDimensionOrDie("Time")
 
+    # Add capacity constraints (unit demands)
+    def demand_callback(from_index):
+        from_node = manager.IndexToNode(from_index)
+        return 1 if from_node != 0 else 0  # Unit demand except depot
+
+    demand_callback_idx = routing.RegisterUnaryTransitCallback(demand_callback)
+    routing.AddDimensionWithVehicleCapacity(
+        demand_callback_idx,
+        0,  # no slack
+        [veh_capa] * veh_count,  # vehicle capacities
+        True,  # start cumul to zero
+        "Capacity"
+    )
+    # Calculate depot return times for each node first
+    depot_pos = nodes[0, :2]
+    depot_return_times = []
+    for i in range(nodes.size(0)):
+        node_pos = nodes[i, :2]
+        dist_to_depot = (node_pos - depot_pos).pow(2).sum().pow(0.5)
+        return_time = int(dist_to_depot / veh_speed)
+        depot_return_times.append(return_time)
+
+    # Add spoilage time constraints with depot return consideration
+    for node in range(1, nodes.size(0)):  # Skip depot
+        index = manager.NodeToIndex(node)
+        spoilage_time = int(nodes[node, 3].item())
+        # Latest pickup time = spoilage time - time to return to depot
+        latest_pickup = spoilage_time - depot_return_times[node]
+        
+
+        if latest_pickup <= 0:
+            continue  # Skip nodes that can't be reached in time
+        # Add time windows for spoilage
+        time_dimension.CumulVar(index).SetRange(0,  max(1, latest_pickup))
+        
+        # Add penalty for approaching spoilage time
+        time_dimension.SetCumulVarSoftUpperBound(
+            index, 
+            latest_pickup,  # Use latest pickup time for penalty too
+            spoilage_penalty
+        )
+    # Solver settings
+    # search_parameters = pywrapcp.DefaultRoutingSearchParameters()
+    # search_parameters.first_solution_strategy = (
+    #     routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+    # )
+    # search_parameters.local_search_metaheuristic = (
+    #     routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+    # )
+    # search_parameters.time_limit.FromSeconds(30)
     
-
-    # Setting first solution heuristic.
+    
     search_parameters = pywrapcp.DefaultRoutingSearchParameters()
+    # Use SAVINGS for better initial clustering
     search_parameters.first_solution_strategy = (
-        routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+       routing_enums_pb2.FirstSolutionStrategy.SAVINGS
     )
-    '''search_parameters.local_search_metaheuristic = (
-        routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+    # Use TABU_SEARCH to escape local optima
+    search_parameters.local_search_metaheuristic = (
+    routing_enums_pb2.LocalSearchMetaheuristic.TABU_SEARCH
     )
-    search_parameters.time_limit.FromSeconds(1)
-    '''
-    # Solve the problem.
-    solution = routing.SolveWithParameters(search_parameters)
+    search_parameters.time_limit.FromSeconds(6000)
+    search_parameters.solution_limit = 100
 
+    # Solve
+    solution = routing.SolveWithParameters(search_parameters)
+    if not solution:
+        return []
+
+
+    # Extract routes
     routes = []
-    for i in range(veh_count):
+    for vehicle_id in range(veh_count):
         route = []
-        idx = routing.Start(i)
-        while not routing.IsEnd(idx):
-            idx = solution.Value(routing.NextVar(idx))
-            route.append( manager.IndexToNode(idx) )
-        routes.append(route)
+        index = routing.Start(vehicle_id)
+        while not routing.IsEnd(index):
+            node_idx = manager.IndexToNode(index)
+            if node_idx != 0:  # Don't include depot in middle of route
+                route.append(node_idx)
+            index = solution.Value(routing.NextVar(index))
+        if route:  # Only add non-empty routes
+            routes.append(route)
 
     return routes
-'''    
-def ort_solve(data, late_cost=1):
-    routes = []
-    with tqdm(desc="Calling ORTools", total=data.batch_size) as pbar:
-        for nodes in data.nodes_gen():
-            route_temp = _solve_cp(nodes, data.veh_count, data.veh_capa, data.veh_speed, late_cost)
-            routes.append(route_temp)
-            pbar.update()
-    return routes'''
- 
-def ort_solve(data, late_cost = 1):
+
+def print_solution(routes, nodes, veh_speed):
+    """Print readable solution"""
+    total_distance = 0
+    total_time = 0
+    
+    for i, route in enumerate(routes):
+        if not route:
+            continue
+            
+        print(f"\nRoute {i}:")
+        time = 0
+        distance = 0
+        current_pos = nodes[0, :2]  # Start at depot
+        
+        print(f"Depot -> ", end='')
+        for node in route:
+            # Calculate metrics to next node
+            next_pos = nodes[node, :2]
+            dist = (next_pos - current_pos).pow(2).sum().pow(0.5)
+            travel_time = dist / veh_speed
+            
+            # Update cumulative metrics
+            distance += dist
+            time += travel_time
+            
+            # Print node info
+            print(f"{node}(t={time:.1f},d={distance:.1f}) -> ", end='')
+            
+            current_pos = next_pos
+            
+        # Return to depot
+        dist = (nodes[0, :2] - current_pos).pow(2).sum().pow(0.5)
+        distance += dist
+        time += dist / veh_speed
+        print(f"Depot(t={time:.1f},d={distance:.1f})")
+        
+        total_distance += distance
+        total_time += time
+        
+    print(f"\nTotal distance: {total_distance:.1f}")
+    print(f"Total time: {total_time:.1f}")
+
+def ort_solve(data, spoilage_penalty=2):
+    """Solve PVRP instances using OR-Tools"""
     with Pool() as p:
-        with tqdm(desc = "Calling ORTools", total = data.batch_size) as pbar:
+        with tqdm(desc="Calling ORTools", total=data.batch_size) as pbar:
             results = [
-                p.apply_async(_solve_cp, (
-                    nodes, 
-                    data.veh_count, 
-                    data.veh_capa, 
-                    data.veh_speed, 
-                    late_cost
-                    ),
-                callback = lambda _:pbar.update()
-                ) for nodes in data.nodes_gen()]
+                p.apply_async(
+                    _solve_cp,
+                    (nodes, data.veh_count, data.veh_capa, data.veh_speed, spoilage_penalty),
+                    callback=lambda _: pbar.update()
+                ) for nodes in data.nodes_gen()
+            ]
             routes = [res.get() for res in results]
+            
+            # Print first solution for debugging
+            if routes and routes[0]:
+                print("\nExample solution:")
+                print_solution(routes[0], next(data.nodes_gen()), data.veh_speed)
+                
     return routes

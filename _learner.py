@@ -159,12 +159,12 @@ class AttentionLearner(nn.Module):
        actions, logps, rewards = [], [], []
        
        while not dyna.done:
-           if dyna.new_customers:
+            if dyna.new_customers:
                self._encode_customers(dyna.nodes, dyna.cust_mask)
                
-           cust_idx, logp = self.step(dyna)
-           actions.append((dyna.cur_veh_idx, cust_idx))
-           logps.append(logp)
-           rewards.append(dyna.step(cust_idx))
+            cust_idx, logp = self.step(dyna)
+            actions.append((dyna.cur_veh_idx, cust_idx))
+            logps.append(logp)
+            rewards.append(dyna.step(cust_idx))
            
        return actions, logps, rewards

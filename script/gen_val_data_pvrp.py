@@ -12,7 +12,7 @@ import os
 
 def main(args):
     # Generate data for Perishable VRP
-    out_dir = os.path.join("data/","pvrp_n{}m{}".format(args.customers_count, args.vehicles_count))
+    out_dir = os.path.join("./data/","pvrp_n{}m{}".format(args.customers_count, args.vehicles_count))
     os.makedirs(out_dir, exist_ok=True)
 
     # Basic dataset with unit demands and spoilage times
@@ -35,15 +35,17 @@ def main(args):
     torch.save(data, os.path.join(out_dir, f"norm_data_spoil_{args.spoilage_range[0]}_{args.spoilage_range[1]}.pyth"))
 
     # Get baseline solutions using OR-Tools
+    '''
     if ORTOOLS_ENABLED:
         ort_routes = ort_solve(data)
-        env = VRP_Environment(data)
+        env = PVRP_Environment(data)
         ort_costs = eval_apriori_routes(env, ort_routes, 1)
         
         torch.save({
             "costs": ort_costs,
             "routes": ort_routes
         }, os.path.join(out_dir, f"ort_spoil_{args.spoilage_range[0]}_{args.spoilage_range[1]}.pyth"))
+    '''
 
 if __name__ == "__main__":
     main(parse_args())            
