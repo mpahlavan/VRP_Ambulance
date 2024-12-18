@@ -15,7 +15,7 @@ def main(args):
    n = args.customers_count 
    m = args.vehicles_count
    out_dir = f"./results/{pb}_n{n}m{m}/"
-   data_path = f"./data/{pb}_n{n}m{m}/norm_data_spoil_120_240.pyth"
+   data_path = f"./data/{pb}_n{n}m{m}/norm_data_spoil_{args.spoilage_range[0]}_{args.spoilage_range[1]}.pyth"
    model_path = "./output/PVRPn10m2/chkpt_ep20.pyth" #f"./output/{pb}_n{n}m{m}.pyth"
 
    print(f" {pb}{n} ".center(96, '-'))
