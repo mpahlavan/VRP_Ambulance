@@ -37,6 +37,8 @@ def train_epoch(args, data, Environment, env_params, bl_wrapped_learner, optim, 
 
             dyna = Environment(data, custs, mask, *env_params)
             actions, logps, rewards, bl_vals = bl_wrapped_learner(dyna)
+            
+
             loss = reinforce_loss(logps, rewards, bl_vals)
 
             prob = torch.stack(logps).sum(0).exp().mean()
@@ -97,22 +99,22 @@ def main(args):
             "vrptw": VRPTW_Dataset,
             "svrptw": VRPTW_Dataset,
             "sdvrptw": SDVRPTW_Dataset,
-            "pvrp": PVRP_Dataset
             }.get(args.problem_type)
     gen_params = [
-            args.customers_count,
-            args.vehicles_count,
-            args.veh_capa,
-            args.veh_speed,
-            args.min_cust_count,
-            args.loc_range,
-            args.dem_range
-            ]
-    if args.problem_type !="vrp" and  args.problem_type !="pvrp":
-        gen_params.extend( [args.horizon, args.dur_range, args.tw_ratio, args.tw_range] )
+        args.customers_count,
+        args.vehicles_count,
+        args.veh_capa,
+        args.veh_speed,
+        args.min_cust_count,
+        args.loc_range,
+        args.horizon,
+        args.spoilage_range
+        ]
+
+    if args.problem_type !="vrp" and args.problem_type !="pvrp":
+        gen_params.extend( [args.horizon, args.dur_range, args.tw_ratio, args.tw_range])
     if args.problem_type == "sdvrptw":
         gen_params.extend( [args.deg_of_dyna, args.appear_early_ratio] )
-        
 
     # TRAIN DATA
     verbose_print("Generating {} {} samples of training data...".format(
@@ -137,8 +139,8 @@ def main(args):
 
     if ORTOOLS_ENABLED:
         ref_routes = ort_solve(test_data)
-    elif LKH_ENABLED:
-        ref_routes = lkh_solve(test_data)
+    #elif LKH_ENABLED:
+    #    ref_routes = lkh_solve(test_data)
     else:
         ref_routes = None
         print("Warning! No external solver found to compute gaps for test.")
@@ -153,6 +155,7 @@ def main(args):
             "pvrp": PVRP_Environment
             }.get(args.problem_type)
     env_params = [args.pending_cost]
+
     if args.problem_type != "vrp" and args.problem_type != "pvrp":
         env_params.append(args.late_cost)
         if args.problem_type != "vrptw":

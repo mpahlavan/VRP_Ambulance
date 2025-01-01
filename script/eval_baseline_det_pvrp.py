@@ -5,9 +5,10 @@ from marpdan.dep import tqdm
 
 import torch
 import os
+import time
 
 def main(args):
-    out_dir = f"./results/{args.problem_type}_n{args.customers_count}m{args.vehicles_count}/"
+    out_dir = f"./results/{args.problem_type}_n{args.customers_count}m{args.vehicles_count}_{time.strftime('%y%m%d-%H%M')}/"
     os.makedirs(out_dir, exist_ok = True)
     data_path = f"./data/{args.problem_type}_n{args.customers_count}m{args.vehicles_count}/norm_data_spoil_{args.spoilage_range[0]}_{args.spoilage_range[1]}.pyth"
     
@@ -15,7 +16,7 @@ def main(args):
 
     # Load and unnormalize data
     data = torch.load(data_path)
-    torch.save(data, "updated_file.pyth")
+    #torch.save(data, "updated_file.pyth")
     nodes = data.nodes.clone()
     nodes[:,:,:2] *= 100  # Unnormalize coordinates
     nodes[:,:,2] *= 200   # Unnormalize demand (always 1 for PVRP)

@@ -4,14 +4,14 @@ import json
 
 CONFIG_FILE = None
 VERBOSE = True
-NO_CUDA = True
+NO_CUDA = False
 SEED = None
 
 
 PROBLEM = "pvrp"
-CUST_COUNT = 10
-VEH_COUNT = 2
-VEH_CAPA = 5
+CUST_COUNT = 13
+VEH_COUNT = 4
+VEH_CAPA = 4
 VEH_SPEED = 1
 HORIZON = 480
 
@@ -24,6 +24,8 @@ TW_RANGE = (30,91)
 DEG_OF_DYN = (0.1,0.25,0.5,0.75)
 APPEAR_EARLY_RATIO = (0.0,0.5,0.75,1.0)
 SPOILAGE_RANGE = (240,360)
+SPOILAGE_PENALTY = 10
+#UNSERVED_PENALTY = 10
 
 PEND_COST = 2
 PEND_GROWTH = None
@@ -38,21 +40,21 @@ MODEL_SIZE = 128
 LAYER_COUNT = 3
 HEAD_COUNT = 8
 FF_SIZE = 512
-TANH_XPLOR = 10
+TANH_XPLOR = 20
 
-EPOCH_COUNT = 20
+EPOCH_COUNT = 10
 ITER_COUNT = 1000
 MINIBATCH_SIZE = 512
 BASE_LR = 0.0001
 LR_DECAY = None
 MAX_GRAD_NORM = 2
 GRAD_NORM_DECAY = None
-LOSS_USE_CUMUL = False
+LOSS_USE_CUMUL = True
 
 BASELINE = "critic"
 ROLLOUT_COUNT = 3
 ROLLOUT_THRESHOLD = 0.05
-CRITIC_USE_QVAL = False
+CRITIC_USE_QVAL = True
 CRITIC_LR = 0.001
 CRITIC_DECAY = None
 
@@ -86,6 +88,9 @@ def parse_args(argv = None):
     group.add_argument("--horizon", type = int, default = HORIZON)
     group.add_argument("--min-cust-count", type = int, default = MIN_CUST_COUNT)
     group.add_argument("--spoilage-range", type = int, default = SPOILAGE_RANGE)
+    group.add_argument("--spoilage-penalty", type = int, default = SPOILAGE_PENALTY)
+    #group.add_argument("--unserved-penalty", type = int, default = UNSERVED_PENALTY)
+
     group.add_argument("--loc-range", type = int, nargs = 2, default = LOC_RANGE)
     group.add_argument("--dem-range", type = int, nargs = 2, default = DEM_RANGE)
     group.add_argument("--dur-range", type = int, nargs = 2, default = DUR_RANGE)

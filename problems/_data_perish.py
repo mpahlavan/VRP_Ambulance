@@ -3,21 +3,22 @@
 import torch
 from torch.utils.data import Dataset
 
+
 class PVRP_Dataset(Dataset):
     """Perishable Vehicle Routing Problem Dataset"""
     CUST_FEAT_SIZE = 4  # x, y, demand(1), spoilage_time
 
     @classmethod
     def generate(cls,
-            batch_size = 1,
-            cust_count = 10,
-            veh_count = 2,
-            veh_capa = 5,
-            veh_speed = 1,
-            min_cust_count = None,
-            cust_loc_range = (0,101),
-            horizon = 480,
-            spoilage_range = (240,360)  # Time window for spoilage
+            batch_size,
+            cust_count,
+            veh_count,
+            veh_capa,
+            veh_speed,
+            min_cust_count,
+            cust_loc_range,
+            horizon,
+            spoilage_range
             ):
         size = (batch_size, cust_count, 1)
 

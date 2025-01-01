@@ -6,6 +6,8 @@ from marpdan.dep import matplotlib as mpl, pyplot as plt
 import numpy as np
 
 import torch
+import time
+import os
 
 SEED = 12348877555
 BATCH_SIZE = 128
@@ -14,7 +16,7 @@ mpl.rcParams["axes.titlesize"] = 20
 
 
 class PVRPAnalyzer:
-    def __init__(self, problem_type, n_customers=10, n_vehicles=2):
+    def __init__(self, args):
         """
         Initialize the PVRP Analyzer.
         
@@ -23,12 +25,20 @@ class PVRPAnalyzer:
             n_customers (int): Number of customers
             n_vehicles (int): Number of vehicles
         """
-        self.problem_type = problem_type
-        self.n_customers = n_customers
-        self.n_vehicles = n_vehicles
-        self.MODEL_PATH  = f"./output/{self.problem_type}_n{n_customers}m{n_vehicles}_241208-1233/chkpt_ep20.pyth" 
+        self.problem_type = args.problem_type
+        self.n_customers = args.customers_count
+        self.n_vehicles = args.vehicles_count
+        self.veh_capa = args.veh_capa
+        self.veh_speed = args.veh_speed
+        self.min_cust_count = args.min_cust_count
+        self.cust_loc_range =  args.loc_range
+        self.horizon = args.horizon
+        self.spoilage_range = args.spoilage_range
+        date = "241230-1048"
+        self.MODEL_PATH  = f"./output/{args.problem_type}n{args.customers_count}m{args.vehicles_count}_{date}/chkpt_ep{args.epoch_count}.pyth"
         self.learner = self._load_model()
-
+        #print( problem_type, n_customers, n_vehicles, epoch)
+        
         
     def _load_model(self):
         """Load the trained AttentionLearner model."""
@@ -47,8 +57,19 @@ class PVRPAnalyzer:
     def generate_data(self):
         """Generate PVRP dataset and get reference routes."""
         torch.manual_seed(SEED)
-        data = PVRP_Dataset.generate(BATCH_SIZE, self.n_customers, self.n_vehicles)
+        data = PVRP_Dataset.generate(
+            BATCH_SIZE, 
+            self.n_customers, 
+            self.n_vehicles, 
+            self.veh_capa,
+            self.veh_speed,
+            self.min_cust_count,
+            self.cust_loc_range,
+            self.horizon,
+            self.spoilage_range)
+        #print(data[0])
         ref_routes = ort_solve(data)
+        #print("ref_routes:", ref_routes)
         data.normalize()
         return data, ref_routes
 
@@ -167,18 +188,26 @@ class PVRPAnalyzer:
             if current_route:
                 learned_routes.append(current_route)
             
+            # Add some debugging in your code
+            print(f"Number of routes in OR-Tools solution:", len(ref_routes[0]))
+            print(f"Number of routes in learned solution:", len(learned_routes))
+
             # Plot learned solution
             self.plot_pvrp_instance(ax, cust, learned_routes,
                                   f"Learned (cost = {c:.3f}, gap = {g:.0%})")
             
             fig.tight_layout()
-            fig.savefig(f"results/pvrp_routes_n{self.n_customers}m{self.n_vehicles}_{i:02}_{100*g:.0f}.pdf",
-                       bbox_inches='tight')
+            
+            output_dir_fig = f"results/pvrp_n{self.n_customers}m{self.n_vehicles}_{time.strftime('%y%m%d-%H%M')}"
+            os.makedirs(output_dir_fig, exist_ok=True)
+            file_path_fig = f"{output_dir_fig}/pvrp_routes_n{self.n_customers}m{self.n_vehicles}_{i:02}_{100*g:.0f}.pdf"
+            fig.savefig(file_path_fig, bbox_inches='tight')
+            
 
         plt.show()
 
 def main(args):
-    analyzer = PVRPAnalyzer(args.problem_type, args.customers_count, args.vehicles_count)
+    analyzer = PVRPAnalyzer(args)
     analyzer.analyze_and_visualize()
     
     

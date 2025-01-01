@@ -1,6 +1,7 @@
 from marpdan.dep import ORTOOLS_ENABLED, pywrapcp, routing_enums_pb2
 from marpdan.dep import tqdm
 from multiprocessing import Pool
+from marpdan.utils import parse_args
 
 def _solve_cp(nodes, veh_count, veh_capa, veh_speed, spoilage_penalty):
     """Solve single PVRP instance using OR-Tools"""
@@ -165,7 +166,9 @@ def print_solution(routes, nodes, veh_speed):
     print(f"\nTotal distance: {total_distance:.1f}")
     print(f"Total time: {total_time:.1f}")
 
-def ort_solve(data, spoilage_penalty=2):
+def ort_solve(data):
+    args = parse_args()
+    spoilage_penalty = args.spoilage_penalty
     """Solve PVRP instances using OR-Tools"""
     with Pool() as p:
         with tqdm(desc="Calling ORTools", total=data.batch_size) as pbar:

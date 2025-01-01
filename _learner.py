@@ -21,7 +21,7 @@ class AttentionLearner(nn.Module):
        self.cust_embedding = nn.Linear(cust_feat_size, model_size)
        
        # Customer encoder
-       self.cust_encoder = TransformerEncoder(layer_count, head_count, model_size, ff_size)
+       self.cust_encoder = TransformerEncoder(layer_count, head_count, model_size, ff_size, dropout_rate=0.1, max_grad_norm=1.0)
        
        # Vehicle attention
        self.fleet_attention = MultiHeadAttention(head_count, veh_state_size, model_size)
@@ -50,8 +50,13 @@ class AttentionLearner(nn.Module):
        ), dim=1)  # [batch, nodes, model_size]
        
        # Apply mask if provided
+    #    if mask is not None:
+    #        cust_emb = cust_emb.masked_fill(mask.unsqueeze(-1), 0)
        if mask is not None:
            cust_emb = cust_emb.masked_fill(mask.unsqueeze(-1), 0)
+
+
+
            
        # Encode using transformer
        self.cust_enc = self.cust_encoder(cust_emb, mask)  # [batch, nodes, model_size]
@@ -62,7 +67,9 @@ class AttentionLearner(nn.Module):
        # Project customer representations
        self.cust_repr = self.cust_project(self.cust_enc)  # [batch, nodes, model_size]
        if mask is not None:
-           self.cust_repr = self.cust_repr.masked_fill(mask.unsqueeze(-1), 0)
+           self.cust_repr[mask] = 0
+
+
 
    def _repr_vehicle(self, vehicles, veh_idx, mask):
        """
@@ -123,6 +130,9 @@ class AttentionLearner(nn.Module):
 
         # Get log probabilities
         return F.log_softmax(compat, dim=2).squeeze(1)
+        # compat[veh_mask] = -float('inf')
+        # return compat.log_softmax(dim = 2).squeeze(1)
+
 
    def step(self, dyna):
        """

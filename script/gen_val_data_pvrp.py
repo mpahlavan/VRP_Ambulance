@@ -24,6 +24,7 @@ def main(args):
         veh_speed=args.veh_speed,
         min_cust_count=args.min_cust_count,
         cust_loc_range=args.loc_range,
+        horizon=args.horizon,
         spoilage_range= args.spoilage_range #(spoil_min, spoil_max)
     )
 
