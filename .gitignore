@@ -1,7 +1,4 @@
-__pycache__/
-output/
-data/
-results/
-pretrained/
 *.pdf
-*.pyth
+*.sh
+/output
+/.json

@@ -14,10 +14,20 @@ ROLLOUTS = 100
 
 torch.manual_seed(SEED)
 
+n=10
+m=2
+out_dir = "data/cvrptw_n{}m{}".format(n, m)
+os.makedirs(out_dir, exist_ok = True)
 
+data = VRPTW_Dataset.generate(BATCH_SIZE, n, m)
+
+data.normalize()
+torch.save(data, os.path.join(out_dir, "norm_data.pyth"))
+
+'''
 # CVRP Data
 for n,m in ((10,2), (20,4), (50,10)):
-    out_dir = "cvrp_n{}m{}".format(n, m)
+    out_dir = "data/cvrp_n{}m{}".format(n, m)
     os.makedirs(out_dir, exist_ok = True)
 
     data = VRPTW_Dataset.generate(BATCH_SIZE, n, m, tw_ratio = 0.0, cust_dur_range = (0,1))
@@ -73,3 +83,4 @@ for n,m in ((10,2), (20,4), (50,10)):
         "costs": ort_costs,
         "routes": ort_routes,
         }, os.path.join(out_dir, "ort.pyth"))
+'''

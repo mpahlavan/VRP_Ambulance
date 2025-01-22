@@ -26,7 +26,7 @@ class PVRPAnalyzer:
         self.problem_type = problem_type
         self.n_customers = n_customers
         self.n_vehicles = n_vehicles
-        self.MODEL_PATH  = f"./output/{self.problem_type}_n{n_customers}m{n_vehicles}_241208-1233/chkpt_ep20.pyth" 
+        self.MODEL_PATH  = f"./output/{self.problem_type}n{n_customers}m{n_vehicles}/chkpt_ep20.pyth" 
         self.learner = self._load_model()
 
         

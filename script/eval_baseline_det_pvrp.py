@@ -15,7 +15,7 @@ def main(args):
 
     # Load and unnormalize data
     data = torch.load(data_path)
-    torch.save(data, "updated_file.pyth")
+    
     nodes = data.nodes.clone()
     nodes[:,:,:2] *= 100  # Unnormalize coordinates
     nodes[:,:,2] *= 200   # Unnormalize demand (always 1 for PVRP)

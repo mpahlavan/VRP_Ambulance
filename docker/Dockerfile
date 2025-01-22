@@ -1,45 +1,47 @@
-# Base image with CUDA support
-#FROM nvidia/cuda:9.1-cudnn7-devel-ubuntu16.04
-FROM jarvice/app-cuda-9.1:9.1-cudnn7-devel-ubuntu16.04
+# Use official PyTorch image with CUDA support
+FROM pytorch/pytorch:2.1.2-cuda12.1-cudnn8-runtime
 
-# Install necessary system packages
+# Set environment variables
+ENV PYTHONPATH=/py_ws:$PYTHONPATH \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Install system dependencies
 RUN apt-get update && \
-	apt-get install -y --no-install-recommends \
-		build-essential \
-		curl && \
-	rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        wget \
+        git \
+        && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-# Install Miniconda and Python dependencies
-RUN curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o miniconda.sh && \
-	chmod +x miniconda.sh && \
-	./miniconda.sh -b -p /opt/conda && \
-	rm miniconda.sh && \
-	/opt/conda/bin/conda install -y pytorch torchvision cudatoolkit=9.0 tqdm matplotlib scipy -c pytorch && \
-	/opt/conda/bin/conda clean -ya
-ENV PATH /opt/conda/bin:$PATH
+# Install LKH solver
+RUN wget -q http://akira.ruc.dk/~keld/research/LKH-3/LKH-3.0.5.tgz && \
+    tar xf LKH-3.0.5.tgz && \
+    cd LKH-3.0.5 && \
+    make && \
+    mv LKH /usr/local/bin/ && \
+    cd .. && \
+    rm -rf LKH-3.0.5 LKH-3.0.5.tgz
 
-# Install LKH (for VRP algorithm)
-RUN curl http://akira.ruc.dk/~keld/research/LKH-3/LKH-3.0.5.tgz -o LKH-3.0.5.tar.gz && \
-	tar zxf LKH-3.0.5.tar.gz && \
-	cd LKH-3.0.5 && \
-	make && \
-	mv LKH /usr/local/bin/ && \
-	cd .. && \
-	rm -rf LKH-3.0.5
-
-
-# Set working directory inside the container
+# Set working directory
 WORKDIR /py_ws/marpdan
 
-# Ensure Python path is properly set
-RUN touch ../__init__.py
-ENV PYTHONPATH /py_ws:$PYTHONPATH
+# Create Python package structure
+RUN mkdir -p /py_ws && touch /py_ws/__init__.py
 
-# Copy the project files into the container
+# Copy only requirements first to leverage Docker cache
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the project files
 COPY . .
 
-# Install dependencies from requirements.txt
-RUN /opt/conda/bin/pip install --no-cache-dir -r requirements.txt
+# Create and configure output volume
+RUN mkdir -p /py_ws/marpdan/output
+VOLUME ["/py_ws/marpdan/output"]
 
-# Expose volume for output
-VOLUME /py_ws/marpdan/output
+# Add healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import torch; print(torch.cuda.is_available())" || exit 1
