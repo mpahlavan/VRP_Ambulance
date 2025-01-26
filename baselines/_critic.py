@@ -5,10 +5,10 @@ import torch.nn as nn
 
 
 class CriticBaseline(Baseline):
-    def __init__(self, learner, cust_count, use_qval = True, use_cumul_reward = False):
+    def __init__(self, learner, cust_count, use_qval=True, use_cumul_reward=False):
         super().__init__(learner, use_cumul_reward)
         self.use_qval = use_qval
-        self.project = nn.Linear(cust_count+1, cust_count+1 if use_qval else 1, bias = False)
+        self.project = nn.Linear(cust_count+1, cust_count+1 if use_qval else 1, bias=False)
 
     def eval_step(self, vrp_dynamics, learner_compat, cust_idx):
         compat = learner_compat.clone()
@@ -21,7 +21,7 @@ class CriticBaseline(Baseline):
 
     def __call__(self, vrp_dynamics):
         mask = vrp_dynamics.mask if hasattr(vrp_dynamics, 'mask') else None
-        self.learner._encode_customers(vrp_dynamics.nodes, mask )
+        self.learner._encode_customers(vrp_dynamics.nodes, mask)
         
         vrp_dynamics.reset()
         actions, logps, rewards, bl_vals = [], [], [], []
@@ -33,42 +33,40 @@ class CriticBaseline(Baseline):
                     vrp_dynamics.mask)
             compat = self.learner._score_customers(veh_repr)
             logp = self.learner._get_logp(compat, vrp_dynamics.cur_veh_mask)
-            #cust_idx = logp.exp().multinomial(1)
             
             # Safe probability calculation
-            probs = logp.exp()  # Convert log probabilities to probabilities
-            
-            # Handle numerical issues
+            probs = logp.exp()
             probs[torch.isnan(probs) | torch.isinf(probs)] = 0.0
             probs[probs < 0] = 0.0
             
-            # If no valid actions, force return to depot
             if probs.sum() < 1e-10:
                 cust_idx = torch.zeros_like(vrp_dynamics.cur_veh_idx)
             else:
-                # Normalize probabilities
                 probs = probs / probs.sum(dim=1, keepdim=True)
-                
-                # Ensure depot is always an option with small probability
                 probs[:, 0] = probs[:, 0].clone() + 1e-6
                 probs = probs / probs.sum(dim=1, keepdim=True)
                 
                 try:
                     cust_idx = probs.multinomial(1)
                 except RuntimeError:
-                    # Fallback to depot if sampling fails
                     cust_idx = torch.zeros_like(vrp_dynamics.cur_veh_idx)
 
             if not(self.use_cumul and bl_vals):
-                bl_vals.append( self.eval_step(vrp_dynamics, compat, cust_idx) )
+                bl_vals.append(self.eval_step(vrp_dynamics, compat, cust_idx))
             
-            actions.append( (vrp_dynamics.cur_veh_idx, cust_idx) )
-            logps.append( logp.gather(1, cust_idx) )
-            rewards.append(vrp_dynamics.step(cust_idx))
+            actions.append((vrp_dynamics.cur_veh_idx, cust_idx))
+            logps.append(logp.gather(1, cust_idx))
+            
+            # Get reward and handle tensor/list format
+            reward = vrp_dynamics.step(cust_idx)
+            if isinstance(reward, list):
+                reward = torch.stack(reward).sum(dim=0)
+            rewards.append(reward)
 
         if self.use_cumul:
-            rewards = torch.stack(rewards).sum(dim = 0)
+            rewards = torch.stack(rewards).sum(dim=0)
             bl_vals = bl_vals[0]
+        
         return actions, logps, rewards, bl_vals
 
     def parameters(self):
@@ -81,4 +79,4 @@ class CriticBaseline(Baseline):
         return self.project.load_state_dict(state_dict)
 
     def to(self, device):
-        self.project.to(device = device)
+        self.project.to(device=device)

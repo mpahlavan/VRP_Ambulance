@@ -11,7 +11,9 @@ class PVRP_Environment:
 
 
     def __init__(self, data, nodes=None, cust_mask=None,
-                spoilage_penalty=2.0, early_reward=0.5, unserved_penalty=1.0):
+             spoilage_penalty=10.0, early_reward=0.5, unserved_penalty=10.0,
+             dist_penalty_coef=1.0, pickup_bonus_coef=5.0, idle_penalty_coef=20.0,
+             additional_late_penalty=10.0, capacity_usage_coef=0.4):
        self.veh_count = data.veh_count
        self.veh_capa = data.veh_capa
        self.veh_speed = data.veh_speed
@@ -22,23 +24,57 @@ class PVRP_Environment:
        self.spoilage_penalty = spoilage_penalty
        self.early_reward = early_reward
        self.unserved_penalty = unserved_penalty
-       self.new_customers = True
+       self.dist_penalty_coef = dist_penalty_coef
+       self.pickup_bonus_coef = pickup_bonus_coef
+       self.idle_penalty_coef = idle_penalty_coef
+       self.additional_late_penalty = additional_late_penalty
+       self.capacity_usage_coef = capacity_usage_coef
 
        
-    def _update_vehicles(self, dest):
-       dist = torch.pairwise_distance(self.cur_veh[:, 0, :2], dest[:, 0, :2], keepdim=True)
-       travel_time = dist / self.veh_speed
+    def _update_vehicles(self, dest, cust_idx):
+        """Update vehicle states after moving to destination"""
+        # Calculate travel distance and time
+        dist = torch.pairwise_distance(
+            self.cur_veh[:, 0, :2], 
+            dest[:, 0, :2], 
+            keepdim=True
+        )
+        travel_time = dist / self.veh_speed
+        arrival_time = self.cur_veh[:, :, 3] + travel_time
 
-       self.cur_veh[:, :, :2] = dest[:, :, :2]  # Position x,y
-       self.cur_veh[:, :, 2] -= 1.0             # Capacity
-       self.cur_veh[:, :, 3] += travel_time     # Time
+        # Calculate time to return to depot
+        to_depot_dist = torch.pairwise_distance(
+            dest[:, 0, :2], 
+            self.nodes[:, 0, :2], 
+            keepdim=True
+        )
+        to_depot_time = to_depot_dist / self.veh_speed
+        latest_arrival = dest[:, :, 3] - to_depot_time
 
-       self.vehicles = self.vehicles.scatter(1,
-           self.cur_veh_idx[:, :, None].expand(-1, -1, self.VEH_STATE_SIZE),
-           self.cur_veh)
-       
-       return dist
-   
+        # Check if delivery was late (convert to boolean first)
+        lateness = (arrival_time > latest_arrival).bool()
+        not_late = ~lateness
+        is_customer = (cust_idx != 0).bool()
+        ontime_pickup = (not_late & is_customer).float()
+        lateness = lateness.float()
+
+        # Track late nodes
+        if cust_idx.any():
+            self.late_nodes.scatter_(1, cust_idx, lateness > 0)
+            self.node_lateness_count += lateness.sum()
+
+        # Update vehicle state
+        self.cur_veh[:, :, :2] = dest[:, :, :2]  # Position x,y
+        self.cur_veh[:, :, 2] -= 1.0             # Capacity
+        self.cur_veh[:, :, 3] += travel_time     # Time
+
+        # Update vehicles tensor
+        self.vehicles = self.vehicles.scatter(1,
+            self.cur_veh_idx[:, :, None].expand(-1, -1, self.VEH_STATE_SIZE),
+            self.cur_veh)
+
+        return dist, lateness, ontime_pickup
+    
    
     def _update_done(self, cust_idx):
        self.veh_done.scatter_(1, self.cur_veh_idx, cust_idx == 0)
@@ -97,50 +133,71 @@ class PVRP_Environment:
     '''
    
     def _update_mask(self, cust_idx):
+        self.new_customers = False
         # Mark served customers
         self.served.scatter_(1, cust_idx, cust_idx > 0)
         
-        # Update urgent deadline
-        if cust_idx.any():
-            new_deadlines = self.nodes.gather(1, cust_idx[:, :, None].expand(-1, -1, self.CUST_FEAT_SIZE))[:, :, 3]
-            self.urgent_deadlines.scatter_(1, self.cur_veh_idx, 
-                torch.min(self.urgent_deadlines.gather(1, self.cur_veh_idx), new_deadlines))
-
-        # Capacity mask - Fix the dimension issue
-        capacity_mask = (self.cur_veh[:, :, 2] <= 0)  # [batch, 1]
-        capacity_mask = capacity_mask.unsqueeze(-1).expand(-1, -1, self.nodes_count)  # [batch, 1, nodes]
-
-        # Time feasibility calculations
+        # Vehicle state [batch, 1, 2/1]
+        active_veh_pos = self.cur_veh[:, :, :2]
+        active_veh_time = self.cur_veh[:, :, 3].unsqueeze(-1)  # Add dimension for broadcasting
+        
+        # Positions [batch, nodes, 2] and [batch, 1, 2]
         depot_pos = self.nodes[:, 0:1, :2]
         node_pos = self.nodes[:, :, :2]
-        current_time = self.cur_veh[:, :, 3]
         
-        # Calculate travel times
-        to_node_dist = (node_pos.unsqueeze(1) - self.cur_veh[:, :, None, :2]).norm(dim=-1)
-        to_node_time = to_node_dist / self.veh_speed
+        # Time calculations [batch, nodes]
+        to_node_dist = torch.cdist(active_veh_pos, node_pos)
+        to_node_time = to_node_dist.squeeze(1) / self.veh_speed
         
-        to_depot_dist = (node_pos - depot_pos).norm(dim=-1)
-        to_depot_time = to_depot_dist / self.veh_speed
+        to_depot_dist = torch.cdist(node_pos, depot_pos)
+        to_depot_time = to_depot_dist.squeeze(-1) / self.veh_speed
         
-        # Total delivery time
-        total_time = current_time.unsqueeze(-1) + to_node_time + to_depot_time.unsqueeze(1)
+        # Track carried goods [batch, nodes]
+        carrying_mask = torch.zeros_like(self.served, dtype=torch.bool)
+        for b in range(self.minibatch_size):
+            active_veh_id = self.cur_veh_idx[b].item()
+            carrying_mask[b] = (self.vehicle_routes[b] == active_veh_id) & self.served[b]
         
-        # Time mask
-        time_mask = total_time > self.urgent_deadlines.unsqueeze(-1)
-
-        # Combine masks with proper dimensions
-        self.mask = (self.served.unsqueeze(1) |           # [batch, 1, nodes]
-                    capacity_mask |                        # [batch, 1, nodes]
-                    time_mask |                           # [batch, veh_count, nodes]
-                    self.veh_done.unsqueeze(-1) |         # [batch, veh_count, 1]
-                    self.infeasible_nodes.unsqueeze(1))   # [batch, 1, nodes]
+        # Get minimum spoilage times [batch, 1]
+        min_spoilage = torch.full((self.minibatch_size, 1), float('inf'), 
+                                device=self.nodes.device)
+        for b in range(self.minibatch_size):
+            carried_goods = self.nodes[b, carrying_mask[b]]
+            if len(carried_goods) > 0:
+                min_spoilage[b] = carried_goods[:, 3].min()
         
-        self.mask[:, :, 0] = 0  # Depot always available
-
+        # Total time calculations [batch, nodes]
+        total_time = active_veh_time.squeeze(1) + to_node_time + to_depot_time
+        
+        # Create spoilage mask [batch, nodes]
+        active_veh_spoilage = (total_time > min_spoilage)
+        carrying_any = carrying_mask.any(dim=1, keepdim=True)
+        active_veh_spoilage = active_veh_spoilage & carrying_any
+        
+        # Initialize full mask [batch, veh_count, nodes]
+        spoilage_mask = torch.zeros_like(self.mask)
+        spoilage_mask.scatter_(1, 
+            self.cur_veh_idx[:, :, None].expand(-1, -1, self.nodes_count),
+            active_veh_spoilage.unsqueeze(1))
+        
+        # Capacity constraints [batch, veh_count, nodes]
+        capacity_mask = (self.vehicles[:, :, 2:3] < 1)
+        capacity_mask = capacity_mask.expand(-1, -1, self.nodes_count)
+        capacity_mask[:, :, 0] = False
+        
+        # Combine all masks
+        self.mask = (
+            self.served.unsqueeze(1).expand(-1, self.veh_count, -1) |
+            spoilage_mask |
+            capacity_mask |
+            self.veh_done.unsqueeze(-1).expand(-1, -1, self.nodes_count) |
+            self.infeasible_nodes.unsqueeze(1).expand(-1, self.veh_count, -1)
+        )
+        self.mask[:, :, 0] = False
+        
         # Update current vehicle mask
         self.cur_veh_mask = self.mask.gather(1,
             self.cur_veh_idx[:, :, None].expand(-1, -1, self.nodes_count))
-        
         
     def _update_cur_veh(self):
        avail = self.vehicles[:, :, 3].clone()
@@ -175,6 +232,7 @@ class PVRP_Environment:
 
        self.veh_done = self.nodes.new_zeros((self.minibatch_size, self.veh_count), dtype=torch.bool)
        self.done = False
+       self.new_customers = True
        self.cust_mask = self.init_cust_mask
        self.served = self.nodes.new_zeros((self.minibatch_size, self.nodes_count), dtype=torch.bool)
        
@@ -201,68 +259,70 @@ class PVRP_Environment:
            (self.minibatch_size, self.nodes_count),
            dtype=torch.long
        ) - 1
+       
+       self.node_lateness_count = torch.zeros((self.minibatch_size, 1), device=self.nodes.device)
+       self.late_nodes = torch.zeros((self.minibatch_size, self.nodes_count), dtype=torch.bool, device=self.nodes.device)
 
 
        
 
     def step(self, cust_idx):
-       # Get destination info
-       dest = self.nodes.gather(1, 
-           cust_idx[:, :, None].expand(-1, -1, self.CUST_FEAT_SIZE))
-       
-       # Update vehicle state and get travel distance
-       dist = self._update_vehicles(dest)
-       #travel_time = dist / self.veh_speed
+        dest = self.nodes.gather(1, 
+            cust_idx[:, :, None].expand(-1, -1, self.CUST_FEAT_SIZE))
 
-    #    self.cur_veh[:, :, :2] = dest[:, :, :2]  # Position x,y
-    #    self.cur_veh[:, :, 2] -= 1.0             # Capacity
-    #    self.cur_veh[:, :, 3] += travel_time     # Time
+        dist, lateness, ontime_pickup = self._update_vehicles(dest, cust_idx)
 
-    #    self.vehicles = self.vehicles.scatter(1,
-    #        self.cur_veh_idx[:, :, None].expand(-1, -1, self.VEH_STATE_SIZE),
-    #        self.cur_veh)
-       
-       # Update state 
-       self._update_done(cust_idx)
-       self._update_mask(cust_idx)
-       self._update_cur_veh()
-       
-       # Calculate rewards
-       rewards = -dist
-       
-       if self.done:
-           vehicle_times = self.vehicles[:, :, 3]
-           arrival_times = self.nodes.new_zeros((self.minibatch_size, self.nodes_count))
-           
-           for v in range(self.veh_count):
-               vehicle_mask = (self.vehicle_routes == v)
-               arrival_times.masked_scatter_(
-                   vehicle_mask,
-                   vehicle_times[:, v].unsqueeze(1).expand(-1, vehicle_mask.size(1))
-               )
-           
-           deadlines = self.nodes[:, :, 3]
-           
-           early_delivery = torch.clamp(deadlines - arrival_times, min=0)
-           early_delivery = early_delivery * self.served.float()
-           early_reward = self.early_reward * early_delivery.sum(dim=1, keepdim=True)
-           
-           late_delivery = torch.clamp(arrival_times - deadlines, min=0)
-           late_delivery = late_delivery * self.served.float()
-           late_penalty = self.spoilage_penalty * late_delivery.sum(dim=1, keepdim=True)
-           
-           if self.init_cust_mask is not None:
-               self.served += self.init_cust_mask
-           unserved = (self.served ^ True).float().sum(-1, keepdim=True) - 1
-           rewards += early_reward - late_penalty - self.unserved_penalty * unserved
-       
-       # Update route tracking
-       self.vehicle_routes.scatter_(1,
-           cust_idx,
-           self.cur_veh_idx.expand(-1, cust_idx.size(1))
-       )
-       
-       return rewards
+        # Calculate immediate reward
+        reward = (
+            -self.dist_penalty_coef * dist
+            - self.spoilage_penalty * lateness
+            + self.pickup_bonus_coef * ontime_pickup
+        )
+        
+        remaining_capacity = self.vehicles[:, :, 2]
+        idle_vehicles_mask = (remaining_capacity == self.veh_capa).float()
+        idle_penalty = -self.idle_penalty_coef * idle_vehicles_mask.sum(dim=1, keepdim=True)
+        reward = reward + idle_penalty
+        
+        self._update_done(cust_idx)
+        self._update_mask(cust_idx)
+        self._update_cur_veh()
+        
+        if self.done:
+            vehicle_times = self.vehicles[:, :, 3]
+            arrival_times = self.nodes.new_zeros((self.minibatch_size, self.nodes_count))
+            
+            for v in range(self.veh_count):
+                vehicle_mask = (self.vehicle_routes == v)
+                arrival_times.masked_scatter_(
+                    vehicle_mask,
+                    vehicle_times[:, v].unsqueeze(1).expand(-1, vehicle_mask.size(1))
+                )
+            
+            deadlines = self.nodes[:, :, 3]
+            
+            early_delivery = torch.clamp(deadlines - arrival_times, min=0)
+            early_delivery = early_delivery * self.served.float()
+            early_reward = self.early_reward * early_delivery.sum(dim=1, keepdim=True)
+            
+            late_delivery = torch.clamp(arrival_times - deadlines, min=0)
+            late_delivery = late_delivery * self.served.float()
+            late_penalty = self.additional_late_penalty * late_delivery.sum(dim=1, keepdim=True)
+            
+            if self.init_cust_mask is not None:
+                self.served += self.init_cust_mask
+            unserved = (self.served ^ True).float().sum(-1, keepdim=True) - 1
+            unserved_penalty = -self.unserved_penalty * unserved
+            
+            reward = reward + early_reward - late_penalty + unserved_penalty
+        
+        self.vehicle_routes.scatter_(1,
+            cust_idx,
+            self.cur_veh_idx.expand(-1, cust_idx.size(1))
+        )
+        
+        return reward
+
 
     def get_state(self):
        return None

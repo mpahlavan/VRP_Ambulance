@@ -7,25 +7,47 @@ import torch
 import os
 
 def main(args):
-    out_dir = f"./results/{args.problem_type}_n{args.customers_count}m{args.vehicles_count}/"
-    os.makedirs(out_dir, exist_ok = True)
-    data_path = f"./data/{args.problem_type}_n{args.customers_count}m{args.vehicles_count}/norm_data_spoil_{args.spoilage_range[0]}_{args.spoilage_range[1]}.pyth"
+    # out_dir = f"./results/{args.problem_type}_n{args.customers_count}m{args.vehicles_count}/"
+    # os.makedirs(out_dir, exist_ok = True)
+    # data_path = f"./data/{args.problem_type}_n{args.customers_count}m{args.vehicles_count}/norm_data_spoil_{args.spoilage_range[0]}_{args.spoilage_range[1]}.pyth"
     
-    print(f" {args.problem_type}n{args.customers_count}m{args.vehicles_count} ".center(96, '-'))
+    # print(f" {args.problem_type}n{args.customers_count}m{args.vehicles_count} ".center(96, '-'))
 
-    # Load and unnormalize data
+    # # Load and unnormalize data
+    # data = torch.load(data_path)
+    # torch.save(data, "updated_file.pyth")
+    # nodes = data.nodes.clone()
+    # nodes[:,:,:2] *= 100  # Unnormalize coordinates
+    # nodes[:,:,2] *= 200   # Unnormalize demand (always 1 for PVRP)
+    # nodes[:,:,3] *= 480   # Unnormalize spoilage times
+
+    # # Create unnormalized dataset
+    # #veh_count,  nodes
+    # unnormed = PVRP_Dataset(data.veh_count, data.veh_capa, data.veh_speed, nodes)
+
+    # env = PVRP_Environment(data)
+
+    args = parse_args()
+    out_dir = f"./results/pvrp_n{args.customers_count}m{args.vehicles_count}/"
+    os.makedirs(out_dir, exist_ok=True)
+    data_path = f"./data/pvrp_n{args.customers_count}m{args.vehicles_count}/norm_data_spoil_{args.spoilage_range[0]}_{args.spoilage_range[1]}.pyth"
+    
+    print(f" PVRP n{args.customers_count}m{args.vehicles_count} ".center(96, '-'))
+
     data = torch.load(data_path)
-    torch.save(data, "updated_file.pyth")
     nodes = data.nodes.clone()
-    nodes[:,:,:2] *= 100  # Unnormalize coordinates
-    nodes[:,:,2] *= 200   # Unnormalize demand (always 1 for PVRP)
-    nodes[:,:,3] *= 480   # Unnormalize spoilage times
+    nodes[:,:,:2] *= 100  # Coordinates
+    nodes[:,:,2] *= 200   # Demand
+    nodes[:,:,3] *= 480   # Spoilage times
 
-    # Create unnormalized dataset
-    #veh_count,  nodes
     unnormed = PVRP_Dataset(data.veh_count, data.veh_capa, data.veh_speed, nodes)
-
     env = PVRP_Environment(data)
+    
+    ort_routes = ort_solve(unnormed)
+    ort_costs = eval_apriori_routes(env, ort_routes, 1)
+    torch.save({"costs": ort_costs, "routes": ort_routes}, out_dir + "ort.pyth")
+
+
     
     '''
     # Solve with LKH

@@ -1,37 +1,37 @@
+from argparse import ArgumentParser
 from marpdan import AttentionLearner
 from marpdan.problems import PVRP_Dataset, PVRP_Environment
 from marpdan.externals import ort_solve
 from marpdan.utils import *
 from marpdan.dep import matplotlib as mpl, pyplot as plt
 import numpy as np
-
 import torch
+import os
 
 SEED = 12348877555
 BATCH_SIZE = 128
-
 mpl.rcParams["axes.titlesize"] = 20
 
+def parse_args(argv=None):
+    parser = ArgumentParser()
+    parser.add_argument("--customers-count", "-n", type=int, default=10)
+    parser.add_argument("--vehicles-count", "-m", type=int, default=2)
+    parser.add_argument("--spoilage-range", type=int, nargs=2, default=[120, 240])
+    parser.add_argument("--epoch-count", "-e", type=int, default=10)
+    args = parser.parse_args(argv)
+    args.problem_type = "PVRP"
+    return args
 
 class PVRPAnalyzer:
     def __init__(self, problem_type, n_customers=10, n_vehicles=2):
-        """
-        Initialize the PVRP Analyzer.
-        
-        Args:
-            problem_type (str): Type of the problem (e.g., 'PVRP')
-            n_customers (int): Number of customers
-            n_vehicles (int): Number of vehicles
-        """
         self.problem_type = problem_type
         self.n_customers = n_customers
         self.n_vehicles = n_vehicles
-        self.MODEL_PATH  = f"./output/{self.problem_type}_n{n_customers}m{n_vehicles}_241208-1233/chkpt_ep20.pyth" 
+        # Update the date/time to match your model checkpoint
+        self.MODEL_PATH = f"./output/{self.problem_type}n{n_customers}m{n_vehicles}_250123-0903/chkpt_ep10.pyth"
         self.learner = self._load_model()
-
         
     def _load_model(self):
-        """Load the trained AttentionLearner model."""
         try:
             chkpt = torch.load(self.MODEL_PATH, map_location="cpu")
             learner = AttentionLearner(
@@ -45,7 +45,6 @@ class PVRPAnalyzer:
             raise FileNotFoundError(f"Model file not found at {self.MODEL_PATH}")
 
     def generate_data(self):
-        """Generate PVRP dataset and get reference routes."""
         torch.manual_seed(SEED)
         data = PVRP_Dataset.generate(BATCH_SIZE, self.n_customers, self.n_vehicles)
         ref_routes = ort_solve(data)
@@ -53,7 +52,6 @@ class PVRPAnalyzer:
         return data, ref_routes
 
     def calculate_reference_costs(self, data, ref_routes):
-        """Calculate costs for reference routes."""
         ref_costs = []
         for batch_idx, routes in enumerate(ref_routes):
             single_env = PVRP_Environment(
@@ -79,15 +77,6 @@ class PVRPAnalyzer:
 
     @staticmethod
     def plot_pvrp_instance(ax, nodes, routes, title):
-        """
-        Plot a PVRP instance with routes and spoilage times.
-        
-        Args:
-            ax: Matplotlib axis
-            nodes: Node coordinates and features
-            routes: List of routes
-            title: Plot title
-        """
         # Plot depot
         ax.plot(nodes[0,0].item(), nodes[0,1].item(), 'ks', markersize=10, label='Depot')
         
@@ -112,13 +101,15 @@ class PVRPAnalyzer:
         ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
 
     def analyze_and_visualize(self):
-        """Perform full analysis and visualization of PVRP solutions."""
         # Generate data and get solutions
         data, ref_routes = self.generate_data()
         ref_costs = self.calculate_reference_costs(data, ref_routes)
         
-        # Get learned model solutions
+        # Initialize environment and set new_customers attribute
         env = PVRP_Environment(data)
+        env.new_customers = False
+        
+        # Get learned model solutions
         with torch.no_grad():
             actions, _, rewards = self.learner(env)
 
@@ -140,6 +131,9 @@ class PVRPAnalyzer:
             sub_idx[BATCH_SIZE//2-4:BATCH_SIZE//2],  # Median cases
             sub_idx[-4:]  # Worst cases
         ))
+        
+        # Create results directory if it doesn't exist
+        os.makedirs("results", exist_ok=True)
 
         # Plot selected instances
         for i, (cust, acts, rs, c, ref) in enumerate(zip(
@@ -177,10 +171,10 @@ class PVRPAnalyzer:
 
         plt.show()
 
-def main(args):
+def main():
+    args = parse_args()
     analyzer = PVRPAnalyzer(args.problem_type, args.customers_count, args.vehicles_count)
     analyzer.analyze_and_visualize()
-    
-    
+
 if __name__ == "__main__":
-    main(parse_args())  
+    main()
