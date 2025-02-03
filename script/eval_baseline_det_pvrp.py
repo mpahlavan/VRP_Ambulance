@@ -1,66 +1,48 @@
+# eval_baseline_det.py
 from marpdan.problems import PVRP_Dataset, PVRP_Environment
-from marpdan.externals import lkh_solve, ort_solve
-from marpdan.utils import * #eval_apriori_routes
+from marpdan.externals import ort_solve
+from marpdan.utils import eval_apriori_routes
 from marpdan.dep import tqdm
-
 import torch
 import os
 
 def main(args):
-    # out_dir = f"./results/{args.problem_type}_n{args.customers_count}m{args.vehicles_count}/"
-    # os.makedirs(out_dir, exist_ok = True)
-    # data_path = f"./data/{args.problem_type}_n{args.customers_count}m{args.vehicles_count}/norm_data_spoil_{args.spoilage_range[0]}_{args.spoilage_range[1]}.pyth"
-    
-    # print(f" {args.problem_type}n{args.customers_count}m{args.vehicles_count} ".center(96, '-'))
-
-    # # Load and unnormalize data
-    # data = torch.load(data_path)
-    # torch.save(data, "updated_file.pyth")
-    # nodes = data.nodes.clone()
-    # nodes[:,:,:2] *= 100  # Unnormalize coordinates
-    # nodes[:,:,2] *= 200   # Unnormalize demand (always 1 for PVRP)
-    # nodes[:,:,3] *= 480   # Unnormalize spoilage times
-
-    # # Create unnormalized dataset
-    # #veh_count,  nodes
-    # unnormed = PVRP_Dataset(data.veh_count, data.veh_capa, data.veh_speed, nodes)
-
-    # env = PVRP_Environment(data)
-
-    args = parse_args()
+    # Setup output directory
     out_dir = f"./results/pvrp_n{args.customers_count}m{args.vehicles_count}/"
     os.makedirs(out_dir, exist_ok=True)
-    data_path = f"./data/pvrp_n{args.customers_count}m{args.vehicles_count}/norm_data_spoil_{args.spoilage_range[0]}_{args.spoilage_range[1]}.pyth"
     
-    print(f" PVRP n{args.customers_count}m{args.vehicles_count} ".center(96, '-'))
-
-    data = torch.load(data_path)
-    nodes = data.nodes.clone()
-    nodes[:,:,:2] *= 100  # Coordinates
-    nodes[:,:,2] *= 200   # Demand
-    nodes[:,:,3] *= 480   # Spoilage times
-
-    unnormed = PVRP_Dataset(data.veh_count, data.veh_capa, data.veh_speed, nodes)
-    env = PVRP_Environment(data)
+    # Load clustered test data
+    data = torch.load(f"./data/pvrp_n{args.customers_count}m{args.vehicles_count}/norm_data_spoil_{args.spoilage_range[0]}_{args.spoilage_range[1]}.pyth")
     
-    ort_routes = ort_solve(unnormed)
-    ort_costs = eval_apriori_routes(env, ort_routes, 1)
-    torch.save({"costs": ort_costs, "routes": ort_routes}, out_dir + "ort.pyth")
-
-
+    # Initialize environment with current parameters
+    env = PVRP_Environment(
+        data,
+        spoilage_penalty=args.spoilage_penalty,
+        early_reward=args.early_reward,
+        unserved_penalty=args.unserved_penalty,
+        dist_penalty_coef=args.dist_penalty_coef,
+        pickup_bonus_coef=args.pickup_bonus_coef,
+        idle_penalty_coef=args.idle_penalty_coef,
+        additional_late_penalty=args.additional_late_penalty,
+        capacity_usage_coef=args.capacity_usage_coef
+    )
     
-    '''
-    # Solve with LKH
-    lkh_routes = lkh_solve(unnormed)
-    lkh_costs = eval_apriori_routes(env, lkh_routes, 1)
-    torch.save({"costs": lkh_costs, "routes": lkh_routes}, out_dir + "lkh.pyth")
-    '''
-
     # Solve with OR-Tools
-    ort_routes = ort_solve(unnormed)
-    ort_costs = eval_apriori_routes(env, ort_routes, 1)
-    torch.save({"costs": ort_costs, "routes": ort_routes}, out_dir + "ort.pyth")
-
+    ort_routes = ort_solve(data, args.spoilage_penalty)
+    ort_costs = eval_apriori_routes(env, ort_routes, args.rollout_count)
+    
+    # Save comprehensive results
+    torch.save({
+        'costs': ort_costs,
+        'routes': ort_routes,
+        'spoilage_rate': env.spoilage_rate(),
+        'capacity_utilization': env.capacity_utilization(),
+        'dist_matrix': data.dist_matrix,
+        'travel_time_matrix': data.travel_time_matrix
+    }, os.path.join(out_dir, "ort_results.pth"))
 
 if __name__ == "__main__":
-    main(parse_args())  
+    # ... (add argument definitions matching train.py)
+    args = parser.parse_args()
+    device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+    main(args)

@@ -30,27 +30,44 @@ def train_epoch(args, data, Environment, env_params, bl_wrapped_learner, optim, 
     
     with tqdm(loader, desc=f"Ep.#{ep+1:>3d}/{args.epoch_count:<3d}") as progress:
         for minibatch in progress:
-            if data.cust_mask is None:
-                custs, mask = minibatch.to(device), None
+            # Handle data and mask
+            if data.cust_mask is not None:
+                nodes, mask = minibatch
+                nodes = nodes.to(device)
+                mask = mask.to(device)
             else:
-                custs, mask = minibatch[0].to(device), minibatch[1].to(device)
+                nodes = minibatch.to(device)
+                mask = None
 
-            dyna = Environment(data, custs, mask, *env_params)
+            # Initialize environment
+            dyna = Environment(
+                data=data,  # Pass the dataset object
+                nodes=nodes,
+                cust_mask=mask,
+                *env_params
+            )
+            dyna.nodes = dyna.nodes.to(device)
+            
+            if mask is not None:
+                dyna.init_cust_mask = mask.to(device)
+
+            # Training step
             actions, logps, rewards, bl_vals = bl_wrapped_learner(dyna)
             
-            # Convert rewards to list if it's a single tensor
+            # Process rewards
             if isinstance(rewards, torch.Tensor):
                 rewards = [rewards]
                 
             loss = reinforce_loss(logps, rewards, bl_vals)
             prob = torch.stack(logps).sum(0).exp().mean()
             val = torch.stack(rewards).sum(0).mean()
-            bl = bl_vals[0].mean()
+            bl = bl_vals[0].mean() if bl_vals else torch.tensor(0)
 
+            # Optimization step
             optim.zero_grad()
             loss.backward()
             
-            if args.max_grad_norm is not None:
+            if args.max_grad_norm:
                 grad_norm = clip_grad_norm_(
                     chain.from_iterable(grp["params"] for grp in optim.param_groups),
                     args.max_grad_norm
@@ -58,6 +75,7 @@ def train_epoch(args, data, Environment, env_params, bl_wrapped_learner, optim, 
             
             optim.step()
 
+            # Update progress
             progress.set_postfix_str(
                 f"l={loss:.4g} p={prob:9.4g} val={val:6.4g} bl={bl:6.4g} |g|={grad_norm:.4g}"
             )
@@ -65,179 +83,152 @@ def train_epoch(args, data, Environment, env_params, bl_wrapped_learner, optim, 
             ep_loss += loss.item()
             ep_prob += prob.item()
             ep_val += val.item()
-            ep_bl += bl.item()
-            ep_norm += grad_norm
+            ep_bl += bl.item() if bl else 0
+            ep_norm += grad_norm.item() if args.max_grad_norm else 0
 
     return tuple(stat / args.iter_count for stat in (ep_loss, ep_prob, ep_val, ep_bl, ep_norm))
 
 def test_epoch(args, test_env, learner, ref_costs):
     learner.eval()
     costs = test_env.nodes.new_zeros(test_env.minibatch_size)
-    for _ in range(100):
-        _, _, rewards = learner(test_env)
-        costs -= torch.stack(rewards).sum(0).squeeze(-1)
-    costs = costs / 100
     
-    mean = costs.mean()
-    std = costs.std()
+    with torch.no_grad():
+        for _ in range(100):
+            _, _, rewards = learner(test_env)
+            costs -= torch.stack(rewards).sum(0).squeeze(-1) if isinstance(rewards, list) else rewards.sum()
+            
+    costs = costs / 100
+    mean, std = costs.mean(), costs.std()
     gap = (costs.to(ref_costs.device) / ref_costs - 1).mean()
-
-    print("Cost on test dataset: {:5.2f} +- {:5.2f} ({:.2%})".format(mean, std, gap))
+    
+    print(f"Test cost: {mean:.2f} ± {std:.2f} ({gap:.2%} gap)")
     return mean.item(), std.item(), gap.item()
 
 def main(args):
     dev = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
-    if args.rng_seed is not None:
-        torch.manual_seed(args.rng_seed)
+    torch.manual_seed(args.rng_seed if args.rng_seed else int(time.time()))
 
-    if args.verbose:
-        verbose_print = print
-    else:
-        def verbose_print(*args, **kwargs): pass
-
-    # Generate training data
-    verbose_print("Generating {} PVRP samples of training data...".format(
-        args.iter_count * args.batch_size),
-        end = " ", flush = True)
-        
+    # Generate training data with clustering
     train_data = PVRP_Dataset.generate(
-            args.iter_count * args.batch_size,
-            args.customers_count,
-            args.vehicles_count,
-            args.veh_capa,
-            args.veh_speed,
-            args.min_cust_count,
-            args.loc_range,
-            args.horizon,
-            args.spoilage_range
-            )
+        args.iter_count * args.batch_size,
+        cust_count=args.customers_count,
+        veh_count=args.vehicles_count,
+        veh_capa=args.veh_capa,
+        veh_speed=args.veh_speed,
+        min_cust_count=args.min_cust_count,
+        cust_loc_range=args.loc_range,
+        horizon=args.horizon,
+        spoilage_range=args.spoilage_range,
+        cluster_prob=0.6
+    )
     train_data.normalize()
-    verbose_print("Done.")
 
     # Generate test data
-    verbose_print("Generating {} PVRP samples of test data...".format(
-        args.test_batch_size),
-        end = " ", flush = True)
     test_data = PVRP_Dataset.generate(
-            args.test_batch_size,
-            args.customers_count,
-            args.vehicles_count,
-            args.veh_capa,
-            args.veh_speed,
-            args.min_cust_count,
-            args.loc_range,
-            args.horizon,
-            args.spoilage_range
-            )
-    verbose_print("Done.")
-
-    # Get reference solutions from OR-Tools
-    if ORTOOLS_ENABLED:
-        ref_routes = ort_solve(test_data)
-    else:
-        ref_routes = None
-        print("Warning! No external solver found to compute gaps for test.")
-        
+        args.test_batch_size,
+        cust_count=args.customers_count,
+        veh_count=args.vehicles_count,
+        veh_capa=args.veh_capa,
+        veh_speed=args.veh_speed,
+        min_cust_count=args.min_cust_count,
+        cust_loc_range=args.loc_range,
+        horizon=args.horizon,
+        spoilage_range=args.spoilage_range,
+        cluster_prob=0.6
+    )
     test_data.normalize()
 
-    # Create test environment
-    env_params = [args.spoilage_penalty, args.early_reward, args.unserved_penalty,
-                 args.dist_penalty_coef, args.pickup_bonus_coef, args.idle_penalty_coef,
-                 args.additional_late_penalty, args.capacity_usage_coef]
-                 
-    test_env = PVRP_Environment(test_data, None, None, *env_params)
+    # Environment parameters
+    env_params = [
+        args.spoilage_penalty,
+        args.early_reward,
+        args.unserved_penalty,
+        args.dist_penalty_coef,
+        args.pickup_bonus_coef,
+        args.idle_penalty_coef,
+        args.additional_late_penalty,
+        args.capacity_usage_coef
+    ]
 
-    if ref_routes is not None:
-        ref_costs = eval_apriori_routes(test_env, ref_routes, 1)
-        print("Reference cost on test dataset {:5.2f} +- {:5.2f}".format(ref_costs.mean(), ref_costs.std()))
+    # Initialize environment
+    test_env = PVRP_Environment(
+        data=test_data,  # Pass dataset instead of individual parameters
+        nodes=test_data.nodes,
+        cust_mask=test_data.cust_mask,
+        *env_params
+    )
     test_env.nodes = test_env.nodes.to(dev)
-    if test_env.init_cust_mask is not None:
-        test_env.init_cust_mask = test_env.init_cust_mask.to(dev)
 
     # Initialize model
-    verbose_print("Initializing attention model...",
-        end = " ", flush = True)
     learner = AttentionLearner(
-            PVRP_Dataset.CUST_FEAT_SIZE,
-            PVRP_Environment.VEH_STATE_SIZE,
-            args.model_size,
-            args.layer_count,
-            args.head_count,
-            args.ff_size,
-            args.tanh_xplor
-            )
-    learner.to(dev)
-    verbose_print("Done.")
+        cust_feat_size=PVRP_Dataset.CUST_FEAT_SIZE,
+        veh_state_size=PVRP_Environment.VEH_STATE_SIZE,
+        model_size=args.model_size,
+        layer_count=args.layer_count,
+        head_count=args.head_count,
+        ff_size=args.ff_size,
+        tanh_xplor=args.tanh_xplor
+    ).to(dev)
 
     # Initialize baseline
-    verbose_print("Initializing '{}' baseline...".format(
-        args.baseline_type),
-        end = " ", flush = True)
-    if args.baseline_type == "none":
-        baseline = NoBaseline(learner)
-    elif args.baseline_type == "nearnb":
-        baseline = NearestNeighbourBaseline(learner, args.loss_use_cumul)
-    elif args.baseline_type == "rollout":
-        args.loss_use_cumul = True
-        baseline = RolloutBaseline(learner, args.rollout_count, args.rollout_threshold)
-    elif args.baseline_type == "critic":
-        baseline = CriticBaseline(learner, args.customers_count, args.critic_use_qval, args.loss_use_cumul)
-    baseline.to(dev)
-    verbose_print("Done.")
-
-    # Initialize optimizer and scheduler
-    verbose_print("Initializing Adam optimizer...",
-        end = " ", flush = True)
-    lr_sched = None
     if args.baseline_type == "critic":
-        optim = Adam([
-            {"params": learner.parameters(), "lr": args.learning_rate},
-            {"params": baseline.parameters(), "lr": args.critic_rate}
-            ])
-        if args.rate_decay is not None:
-            critic_decay = args.rate_decay if args.critic_decay is None else args.critic_decay
-            lr_sched = LambdaLR(optim,[
-                lambda ep: args.learning_rate * args.rate_decay**ep,
-                lambda ep: args.critic_rate * critic_decay**ep
-                ])
-    else:
-        optim = Adam(learner.parameters(), args.learning_rate)
-        if args.rate_decay is not None:
-            lr_sched = LambdaLR(optim, lambda ep: args.learning_rate * args.rate_decay**ep)
-    verbose_print("Done.")
-
-    # Setup checkpointing
-    verbose_print("Creating output dir...",
-        end = " ", flush = True)
-    args.output_dir = "./output/PVRPn{}m{}_{}".format(
+        baseline = CriticBaseline(
+            learner, 
             args.customers_count,
-            args.vehicles_count,
-            time.strftime("%y%m%d-%H%M")
-            ) if args.output_dir is None else args.output_dir
-    os.makedirs(args.output_dir, exist_ok = True)
-    write_config_file(args, os.path.join(args.output_dir, "args.json"))
-    verbose_print("'{}' created.".format(args.output_dir))
-
-    if args.resume_state is None:
-        start_ep = 0
+            args.critic_use_qval,
+            args.loss_use_cumul
+        )
+    elif args.baseline_type == "rollout":
+        baseline = RolloutBaseline(
+            learner,
+            args.rollout_count,
+            args.rollout_threshold
+        )
+    elif args.baseline_type == "nearnb":
+        baseline = NearestNeighbourBaseline(
+            learner,
+            args.loss_use_cumul
+        )
     else:
-        start_ep = load_checkpoint(args, learner, optim, baseline, lr_sched)
+        baseline = NoBaseline(learner)
+    baseline.to(dev)
 
-    verbose_print("Running...")
+    # Configure optimizer
+    optim_groups = [
+        {"params": learner.parameters(), "lr": args.learning_rate},
+    ]
+    if args.baseline_type == "critic":
+        optim_groups.append({"params": baseline.parameters(), "lr": args.critic_rate})
+        
+    optim = Adam(optim_groups)
+    lr_sched = LambdaLR(optim, [
+        lambda ep: args.learning_rate * (args.rate_decay ** ep),
+        lambda ep: args.critic_rate * (args.critic_decay ** ep)
+    ]) if args.rate_decay else None
+
+    # Setup output directory
+    args.output_dir = args.output_dir or f"./output/PVRPn{args.customers_count}m{args.vehicles_count}_{time.strftime('%y%m%d-%H%M')}"
+    os.makedirs(args.output_dir, exist_ok=True)
+    write_config_file(args, os.path.join(args.output_dir, "args.json"))
+
+    # Training loop
+    start_ep = 0
     train_stats = []
     test_stats = []
+    
     try:
         for ep in range(start_ep, args.epoch_count):
             train_stats.append(train_epoch(args, train_data, PVRP_Environment, env_params, baseline, optim, dev, ep))
-            if ref_routes is not None:
-                test_stats.append(test_epoch(args, test_env, learner, ref_costs))
-
-            if args.rate_decay is not None:
+            
+            if (ep % args.test_interval) == 0 and test_data is not None:
+                test_stats.append(test_epoch(args, test_env, learner, test_data))
+                
+            if lr_sched:
                 lr_sched.step()
-
+                
             if (ep+1) % args.checkpoint_period == 0:
                 save_checkpoint(args, ep, learner, optim, baseline, lr_sched)
-
+                
     except KeyboardInterrupt:
         save_checkpoint(args, ep, learner, optim, baseline, lr_sched)
     finally:

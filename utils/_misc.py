@@ -1,5 +1,5 @@
+# misc.py
 import torch
-
 import os.path
 from itertools import repeat, zip_longest
 
@@ -33,72 +33,53 @@ def _pad_with_zeros(src_it):
     yield from src_it
     yield from repeat(0)
 
-
 def eval_apriori_routes(dyna, routes, rollout_count):
-    """Evaluate routes for PVRP considering spoilage constraints"""
-    def _pad_with_zeros(route):
-        """Add depot returns (0) at end of route"""
-        for node in route:
-            yield node 
-        while True:
-            yield 0
-
-    # Check if routes is empty or None
-    if not routes:
-        print("No routes provided")
-        return dyna.nodes.new_zeros(dyna.minibatch_size)
-
-    mean_cost = dyna.nodes.new_zeros(dyna.minibatch_size)
+    """Enhanced route evaluation with device awareness"""
+    device = dyna.nodes.device
+    mean_cost = torch.zeros(dyna.minibatch_size, device=device)
     
-    for c in range(rollout_count):
+    for _ in range(rollout_count):
         dyna.reset()
-        
-        try:
-            # Initialize route iterators with proper handling of empty/missing routes
-            routes_it = []
-            for batch_idx in range(dyna.minibatch_size):
-                # Handle case where routes[batch_idx] might not exist
-                if batch_idx >= len(routes) or not routes[batch_idx]:
-                    routes_it.append([_pad_with_zeros([])])
-                else:
-                    routes_it.append([_pad_with_zeros(route) for route in routes[batch_idx]])
-            
-            rewards = []
-            while not dyna.done:
-                try:
-                    # Get next node for each active vehicle
-                    cust_idx = []
-                    for n, i in enumerate(dyna.cur_veh_idx):
-                        i_val = i.item()
-                        # Ensure we don't index out of bounds
-                        if i_val >= len(routes_it[n]):
-                            cust_idx.append([0])  # Return to depot if no route available
-                        else:
-                            cust_idx.append([next(routes_it[n][i_val])])
-                    
-                    # Convert to tensor and step environment
-                    cust_idx = dyna.nodes.new_tensor(cust_idx, dtype=torch.int64)
-                    rewards.append(dyna.step(cust_idx))
-                    
-                except Exception as e:
-                    print(f"Error during route execution: {e}")
-                    break
-            
-            # Calculate cost even if we broke early
-            if rewards:
-                mean_cost += -torch.stack(rewards).sum(dim=0).squeeze(-1)
+        for batch_idx in range(dyna.minibatch_size):
+            if batch_idx >= len(routes) or not routes[batch_idx]:
+                continue
                 
-        except Exception as e:
-            print(f"Error during rollout {c}: {e}")
-            continue
-            
-    return mean_cost / rollout_count if rollout_count > 0 else mean_cost
-
+            veh_assignments = [[] for _ in range(dyna.veh_count)]
+            # Distribute routes to vehicles
+            for vid, route in enumerate(routes[batch_idx]):
+                if vid >= dyna.veh_count: break
+                veh_assignments[vid] = route + [0]  # Add depot return
+                
+            # Process vehicle routes
+            for vid in range(dyna.veh_count):
+                if not veh_assignments[vid]:
+                    continue
+                    
+                # Set vehicle to current route
+                cust_idx = torch.tensor([veh_assignments[vid].pop(0)], 
+                                      device=device)
+                dyna.cur_veh_idx[0] = vid  # Batch size 1
+                _ = dyna.step(cust_idx)
+                
+        # Collect final rewards
+        mean_cost -= dyna.cumulative_reward
+        
+    return mean_cost / rollout_count
 
 def load_old_weights(learner, state_dict):
-    learner.load_state_dict(state_dict)
+    """Handle modified architecture when loading weights"""
+    try:
+        learner.load_state_dict(state_dict, strict=False)
+    except RuntimeError as e:
+        print(f"Partial weight loading: {e}")
+        
+    # Handle attention dimension changes
     for layer in learner.cust_encoder.children():
-        layer.mha._inv_sqrt_d = layer.mha.key_size_per_head**0.5
-    learner.fleet_attention._inv_sqrt_d = learner.fleet_attention.key_size_per_head**0.5
-    learner.veh_attention._inv_sqrt_d = learner.veh_attention.key_size_per_head**0.5
+        if hasattr(layer.mha, '_inv_sqrt_d'):
+            layer.mha._inv_sqrt_d = layer.mha.key_size_per_head**0.5
+            
+    for attn in [learner.fleet_attention, learner.veh_attention]:
+        if hasattr(attn, '_inv_sqrt_d'):
+            attn._inv_sqrt_d = attn.key_size_per_head**0.5
 
+# ... rest of the file remains same

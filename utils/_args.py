@@ -36,7 +36,7 @@ FF_SIZE = 512
 TANH_XPLOR = 10
 
 # Training parameters
-EPOCH_COUNT = 10
+EPOCH_COUNT = 20
 ITER_COUNT = 1000
 MINIBATCH_SIZE = 512  # Increased for parallel processing
 BASE_LR = 0.0001
@@ -92,6 +92,18 @@ def parse_args(argv=None):
                       help="Range for location coordinates")
     group.add_argument("--spoilage-range", type=int, nargs=2, default=SPOILAGE_RANGE,
                       help="Range for spoilage times")
+    group.add_argument("--cluster-prob", type=float, default=0.6,
+                 help="Probability of spatial-temporal clustering in data generation")
+
+    # Add test interval parameter
+    TEST_INTERVAL = 5  # Add to testing parameters section
+
+    # Update testing parameters group
+    group = parser.add_argument_group("Testing Parameters")
+    group.add_argument("--test-batch-size", type=int, default=TEST_BATCH_SIZE,
+                    help="Batch size for testing")
+    group.add_argument("--test-interval", type=int, default=TEST_INTERVAL,
+                    help="Number of epochs between test evaluations")
 
     # PVRP reward/penalty parameters
     group = parser.add_argument_group("PVRP Reward Parameters")
@@ -160,10 +172,6 @@ def parse_args(argv=None):
     group.add_argument("--critic-decay", type=float, default=CRITIC_DECAY,
                       help="Critic learning rate decay")
 
-    # Testing parameters
-    group = parser.add_argument_group("Testing Parameters")
-    group.add_argument("--test-batch-size", type=int, default=TEST_BATCH_SIZE,
-                      help="Batch size for testing")
 
     # Checkpointing parameters
     group = parser.add_argument_group("Checkpointing")
