@@ -18,16 +18,29 @@ def routes_to_string(routes):
         )
 
 
+# def export_train_test_stats(args, start_ep, train_stats, test_stats):
+#     fpath = os.path.join(args.output_dir, "loss_gap.csv")
+#     with open(fpath, 'a') as f:
+#         f.write( (' '.join("{: >16}" for _ in range(9)) + '\n').format(
+#             "#EP", "#LOSS", "#PROB", "#VAL", "#BL", "#NORM", "#TEST_MU", "#TEST_STD", "#TEST_GAP"
+#             ))
+#         for ep, (tr,te) in enumerate( zip_longest(train_stats, test_stats, fillvalue=float('nan')), start = start_ep):
+#             f.write( ("{: >16d}" + ' '.join("{: >16.3g}" for _ in range(8)) + '\n').format(
+#                 ep, *tr, *te))
 def export_train_test_stats(args, start_ep, train_stats, test_stats):
-    fpath = os.path.join(args.output_dir, "loss_gap.csv")
-    with open(fpath, 'a') as f:
-        f.write( (' '.join("{: >16}" for _ in range(9)) + '\n').format(
-            "#EP", "#LOSS", "#PROB", "#VAL", "#BL", "#NORM", "#TEST_MU", "#TEST_STD", "#TEST_GAP"
+    """Export training and test statistics"""
+    with open(os.path.join(args.output_dir, "stats.txt"), 'w') as f:
+        f.write("         Epoch       Loss      Prob        Val         BL      Norm      Cost       Std        Gap\n")
+        
+        for ep, (tr_stat, te_stat) in enumerate(zip_longest(train_stats, test_stats, fillvalue=(0,0,0))):
+            # Ensure tr_stat and te_stat are tuples with proper length
+            tr_stat = tuple(tr_stat) if tr_stat else (0,) * 5
+            te_stat = tuple(te_stat) if te_stat else (0,) * 3
+            
+            # Format the line with proper unpacking
+            f.write(("{:>16d}" + "{:>10.3g}" * 8 + "\n").format(
+                start_ep + ep + 1, *tr_stat, *te_stat
             ))
-        for ep, (tr,te) in enumerate( zip_longest(train_stats, test_stats, fillvalue=float('nan')), start = start_ep):
-            f.write( ("{: >16d}" + ' '.join("{: >16.3g}" for _ in range(8)) + '\n').format(
-                ep, *tr, *te))
-
 
 def _pad_with_zeros(src_it):
     yield from src_it

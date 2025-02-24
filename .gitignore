@@ -5,3 +5,9 @@ results/
 pretrained/
 *.pdf
 *.pyth
+logs/
++logs/
+++logs/
+ortools_logs/
+ortools_routes.log
+pvrp_run.log

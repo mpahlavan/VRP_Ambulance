@@ -1,8 +1,8 @@
+from argparse import ArgumentParser
 from marpdan import AttentionLearner
 from marpdan.problems import PVRP_Dataset, PVRP_Environment
 from marpdan.utils import *
 from marpdan.dep import tqdm
-
 import torch
 import time
 import os
@@ -11,29 +11,38 @@ from torch.utils.data import DataLoader
 dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 ROLLOUTS = 100
 
+def parse_args(argv=None):
+    parser = ArgumentParser()
+    # Basic parameters
+    parser.add_argument("--customers-count", "-n", type=int, default=10)
+    parser.add_argument("--vehicles-count", "-m", type=int, default=2)
+    parser.add_argument("--epoch-count", "-e", type=int, default=10)
+    parser.add_argument("--spoilage-range", type=int, nargs=2, default=[120, 240])
+    args = parser.parse_args(argv)
+    args.problem_type = "pvrp"  # Fixed for PVRP
+    return args
 
 def main(args):
     pb = args.problem_type
     n = args.customers_count
     m = args.vehicles_count
     epoch = args.epoch_count
-    date = "241230-1048"
+    date = "250123-0903"# Fixed date stamp for model reference
+    
     out_pdf_dir = f"./results/{pb}_n{n}m{m}_{time.strftime('%y%m%d-%H%M')}/"
-    os.makedirs(out_pdf_dir, exist_ok = True)
+    os.makedirs(out_pdf_dir, exist_ok=True)
     data_path = f"./data/{pb}_n{n}m{m}/norm_data_spoil_{args.spoilage_range[0]}_{args.spoilage_range[1]}.pyth"
-    model_path = f"./output/{pb}n{n}m{m}_{date}/chkpt_ep{epoch}.pyth"
+    model_path = f"./output/PVRPn{n}m{m}_{date}/chkpt_ep{epoch}.pyth"  # Note capitalization
 
     print(f" {pb}_n{n}m{m} ".center(96, '-'))
-
 
     try:
         data = torch.load(data_path)
         loader = DataLoader(data, batch_size=512)
 
-        # Initialize learner with PVRP feature sizes
         learner = AttentionLearner(
-            cust_feat_size=PVRP_Dataset.CUST_FEAT_SIZE,  # 4: x,y,demand,spoilage
-            veh_state_size=PVRP_Environment.VEH_STATE_SIZE  # 4: x,y,capacity,time
+            cust_feat_size=PVRP_Dataset.CUST_FEAT_SIZE,
+            veh_state_size=PVRP_Environment.VEH_STATE_SIZE
         )
         chkpt = torch.load(model_path, map_location="cpu")
         load_old_weights(learner, chkpt["model"])
@@ -41,7 +50,6 @@ def main(args):
         learner.eval()
 
         with torch.no_grad():
-
             # GREEDY
             learner.greedy = False
             costs = []
@@ -84,26 +92,9 @@ def main(args):
             print(f"sample {costs.mean():.3f} +- {costs.std():.3f} w.p. {probs.mean():.3g}")
             torch.save(costs, out_pdf_dir + f"mardan_sample{ROLLOUTS}.pyth")
 
-            '''
-            beam_width = 5  # Adjust based on computational resources
-            costs, logps = [], []
-            loader = DataLoader(data, batch_size=512)
-            for batch in tqdm(loader, desc="Evaluating Beam Search"):
-                batch = batch.to(dev)
-                env = PVRP_Environment(data, batch)
-
-                actions, reward, logp = beam_search(env, learner, beam_width)
-                costs.append(-reward)
-                logps.append(logp.exp())
-
-            costs = torch.tensor(costs)
-            probs = torch.tensor(logps)
-            print(f"beam {costs.mean():.3f} +- {costs.std():.3f} w.p. {probs.mean():.3g}")
-            torch.save(costs, out_dir + "mardan_beam.pyth")
-            '''
     except Exception as e:
         print(f"Error processing {n},{m}: {e}")
 
-   
 if __name__ == "__main__":
-    main(parse_args())     
+    args = parse_args()
+    main(args)
