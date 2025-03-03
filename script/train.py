@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from marpdan import *
-from marpdan.problems import *
+from marpdan.problems import PVRP_Dataset, PVRP_Environment
 from marpdan.baselines import *
 from marpdan.externals import *
 from marpdan.dep import *
@@ -64,7 +64,7 @@ def train_epoch(args, data, Environment, env_params, bl_wrapped_learner, optim, 
 
 def test_epoch(args, test_env, learner, ref_costs):
     learner.eval()
-    if args.problem_type[0] == "s" or args.problem_type[0] == "p":
+    if args.problem_type[0] == "s":
         costs = test_env.nodes.new_zeros(test_env.minibatch_size)
         for _ in range(100):
             _, _, rewards = learner(test_env)
@@ -92,47 +92,69 @@ def main(args):
         def verbose_print(*args, **kwargs): pass
 
     # PROBLEM
-    Dataset = {
-            "pvrp": PVRP_Dataset,
-            "vrptw": VRPTW_Dataset,
-            "svrptw": VRPTW_Dataset,
-            "sdvrptw": SDVRPTW_Dataset,
-            "pvrp": PVRP_Dataset
-            }.get(args.problem_type)
-    gen_params = [
+    Dataset = PVRP_Dataset
+    verbose_print("Generating {} PVRP samples of training data...".format(
+        args.iter_count * args.batch_size),
+        end = " ", flush = True)
+    train_data = Dataset.generate(
+            args.iter_count * args.batch_size,
             args.customers_count,
             args.vehicles_count,
             args.veh_capa,
             args.veh_speed,
             args.min_cust_count,
             args.loc_range,
-            args.dem_range
-            ]
-    if args.problem_type !="vrp" and  args.problem_type !="pvrp":
-        gen_params.extend( [args.horizon, args.dur_range, args.tw_ratio, args.tw_range] )
-    if args.problem_type == "sdvrptw":
-        gen_params.extend( [args.deg_of_dyna, args.appear_early_ratio] )
-        
-
-    # TRAIN DATA
-    verbose_print("Generating {} {} samples of training data...".format(
-        args.iter_count * args.batch_size, args.problem_type.upper()),
-        end = " ", flush = True)
-    train_data = Dataset.generate(
-            args.iter_count * args.batch_size,
-            *gen_params
+            args.horizon,
+            args.spoilage_range
             )
+    # gen_params = [
+    #         args.customers_count,
+    #         args.vehicles_count,
+    #         args.veh_capa,
+    #         args.veh_speed,
+    #         args.min_cust_count,
+    #         args.loc_range,
+    #         args.dem_range
+    #         ]
+    # if args.problem_type != "vrp":
+    #     gen_params.extend( [args.horizon, args.dur_range, args.tw_ratio, args.tw_range] )
+    # if args.problem_type == "sdvrptw":
+    #     gen_params.extend( [args.deg_of_dyna, args.appear_early_ratio] )
+
+    # # TRAIN DATA
+    # verbose_print("Generating {} {} samples of training data...".format(
+    #     args.iter_count * args.batch_size, args.problem_type.upper()),
+    #     end = " ", flush = True)
+    # train_data = Dataset.generate(
+    #         args.iter_count * args.batch_size,
+    #         *gen_params
+    #         )
     train_data.normalize()
     verbose_print("Done.")
 
     # TEST DATA AND COST REFERENCE
-    verbose_print("Generating {} {} samples of test data...".format(
-        args.test_batch_size, args.problem_type.upper()),
+    # verbose_print("Generating {} {} samples of test data...".format(
+    #     args.test_batch_size, args.problem_type.upper()),
+    #     end = " ", flush = True)
+    # test_data = Dataset.generate(
+    #         args.test_batch_size,
+    #         *gen_params
+    #         )
+    # verbose_print("Done.")
+    verbose_print("Generating {} PVRP samples of test data...".format(
+        args.test_batch_size),
         end = " ", flush = True)
-    test_data = Dataset.generate(
-            args.test_batch_size,
-            *gen_params
-            )
+    test_data = PVRP_Dataset.generate(
+        args.test_batch_size,               # batch_size
+        args.customers_count,               # cust_count
+        args.vehicles_count,                # veh_count
+        args.veh_capa,                      # veh_capa
+        args.veh_speed,                     # veh_speed
+        args.min_cust_count,                # min_cust_count
+        args.loc_range,                     # cust_loc_range
+        args.horizon,                       # horizon
+        args.spoilage_range                 # spoilage_range
+    )
     verbose_print("Done.")
 
     if ORTOOLS_ENABLED:
@@ -145,18 +167,25 @@ def main(args):
     test_data.normalize()
 
     # ENVIRONMENT
-    Environment = {
-            "vrp": VRP_Environment,
-            "vrptw": VRPTW_Environment,
-            "svrptw": SVRPTW_Environment,
-            "sdvrptw": SDVRPTW_Environment,
-            "pvrp": PVRP_Environment
-            }.get(args.problem_type)
-    env_params = [args.pending_cost]
-    if args.problem_type != "vrp" and args.problem_type != "pvrp":
-        env_params.append(args.late_cost)
-        if args.problem_type != "vrptw":
-            env_params.extend( [args.speed_var, args.late_prob, args.slow_down, args.late_var] )
+    Environment = PVRP_Environment 
+    # Environment = {
+    #         "vrp": VRP_Environment,
+    #         "vrptw": VRPTW_Environment,
+    #         "svrptw": SVRPTW_Environment,
+    #         "sdvrptw": SDVRPTW_Environment
+    #         }.get(args.problem_type)
+    env_params = [
+    args.spoilage_penalty,  
+    args.unserved_penalty,  
+    args.dist_penalty_coef,  
+    args.pickup_bonus_coef,  
+    args.additional_late_penalty,  
+    args.capacity_usage_coef  
+]
+    # if args.problem_type != "vrp":
+    #     env_params.append(args.late_cost)
+    #     if args.problem_type != "vrptw":
+    #         env_params.extend( [args.speed_var, args.late_prob, args.slow_down, args.late_var] )
     test_env = Environment(test_data, None, None, *env_params)
 
     if ref_routes is not None:
@@ -222,7 +251,7 @@ def main(args):
     verbose_print("Creating output dir...",
         end = " ", flush = True)
     args.output_dir = "./output/{}n{}m{}_{}".format(
-            args.problem_type,
+            args.problem_type.upper(),
             args.customers_count,
             args.vehicles_count,
             time.strftime("%y%m%d-%H%M")

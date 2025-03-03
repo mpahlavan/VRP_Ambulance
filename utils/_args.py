@@ -25,6 +25,16 @@ DEG_OF_DYN = (0.1,0.25,0.5,0.75)
 APPEAR_EARLY_RATIO = (0.0,0.5,0.75,1.0)
 SPOILAGE_RANGE = (240,360)
 
+# PVRP reward/penalty coefficients
+SPOILAGE_PENALTY = 10.0
+EARLY_REWARD = 0.5
+UNSERVED_PENALTY = 10.0
+DIST_PENALTY_COEF = 1.0
+PICKUP_BONUS_COEF = 5.0
+IDLE_PENALTY_COEF = 10.0
+ADDITIONAL_LATE_PENALTY = 10.0
+CAPACITY_USAGE_COEF = 0.4
+
 PEND_COST = 2
 PEND_GROWTH = None
 LATE_COST = 1
@@ -77,15 +87,17 @@ def parse_args(argv = None):
     parser.add_argument("--rng-seed", type = int, default = SEED)
 
     group = parser.add_argument_group("Data generation parameters")
-    group.add_argument("--problem-type", "-p", type = str,
-            choices = ["vrp", "vrptw", "svrptw", "sdvrptw", "pvrp"], default = PROBLEM)
+    group.add_argument("--problem-type", "-p", type=str,
+                   choices=["pvrp"], default="pvrp")
+#     group.add_argument("--problem-type", "-p", type = str,
+#             choices = ["vrp", "vrptw", "svrptw", "sdvrptw", "pvrp"], default = PROBLEM)
     group.add_argument("--customers-count", "-n", type = int, default = CUST_COUNT)
     group.add_argument("--vehicles-count", "-m", type = int, default = VEH_COUNT)
     group.add_argument("--veh-capa", type = int, default = VEH_CAPA)
     group.add_argument("--veh-speed", type = int, default = VEH_SPEED)
     group.add_argument("--horizon", type = int, default = HORIZON)
     group.add_argument("--min-cust-count", type = int, default = MIN_CUST_COUNT)
-    group.add_argument("--spoilage-range", type = int, default = SPOILAGE_RANGE)
+    group.add_argument("--spoilage-range", type = int, nargs = 2, default = SPOILAGE_RANGE)
     group.add_argument("--loc-range", type = int, nargs = 2, default = LOC_RANGE)
     group.add_argument("--dem-range", type = int, nargs = 2, default = DEM_RANGE)
     group.add_argument("--dur-range", type = int, nargs = 2, default = DUR_RANGE)
@@ -94,6 +106,7 @@ def parse_args(argv = None):
     group.add_argument("--deg-of-dyna", type = float, nargs = '*', default = DEG_OF_DYN)
     group.add_argument("--appear-early-ratio", type = float, nargs = '*', default = APPEAR_EARLY_RATIO)
 
+    # Standard VRP Environment parameters
     group = parser.add_argument_group("VRP Environment parameters")
     group.add_argument("--pending-cost", type = float, default = PEND_COST)
     group.add_argument("--pend-cost-growth", type = float, default = PEND_GROWTH)
@@ -103,6 +116,25 @@ def parse_args(argv = None):
     group.add_argument("--late-prob", type = float, default = LATE_PROB)
     group.add_argument("--slow-down", type = float, default = SLOW_DOWN)
     group.add_argument("--late-var", type = float, default = LATE_VAR)
+    
+     # PVRP reward/penalty parameters
+    group = parser.add_argument_group("PVRP Reward Parameters")
+    group.add_argument("--spoilage-penalty", type=float, default=SPOILAGE_PENALTY,
+                      help="Penalty for spoiled goods")
+    group.add_argument("--early-reward", type=float, default=EARLY_REWARD,
+                      help="Reward for early delivery")
+    group.add_argument("--unserved-penalty", type=float, default=UNSERVED_PENALTY,
+                      help="Penalty for unserved customers")
+    group.add_argument("--dist-penalty-coef", type=float, default=DIST_PENALTY_COEF,
+                      help="Coefficient for distance penalty")
+    group.add_argument("--pickup-bonus-coef", type=float, default=PICKUP_BONUS_COEF,
+                      help="Coefficient for on-time pickup bonus")
+    group.add_argument("--idle-penalty-coef", type=float, default=IDLE_PENALTY_COEF,
+                      help="Coefficient for idle vehicle penalty")
+    group.add_argument("--additional-late-penalty", type=float, default=ADDITIONAL_LATE_PENALTY,
+                      help="Additional penalty for late deliveries")
+    group.add_argument("--capacity-usage-coef", type=float, default=CAPACITY_USAGE_COEF,
+                      help="Coefficient for capacity usage penalty")
 
     group = parser.add_argument_group("Model parameters")
     group.add_argument("--model-size", "-s", type = int, default = MODEL_SIZE)
@@ -137,6 +169,14 @@ def parse_args(argv = None):
     group.add_argument("--output-dir", "-o", type = str, default = OUTPUT_DIR)
     group.add_argument("--checkpoint-period", "-c", type = int, default = CHECKPOINT_PERIOD)
     group.add_argument("--resume-state", type = str, default = RESUME_STATE)
+    
+    # Logging parameters
+    group = parser.add_argument_group("Logging parameters")
+    group.add_argument("--log-dir", type = str, default = None,
+                     help="Directory for detailed environment logs")
+    group.add_argument("--log-level", type = str, default = "INFO",
+                     choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+                     help="Logging level")
 
     args = parser.parse_args(argv)
     if args.config_file is not None:

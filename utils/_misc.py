@@ -101,4 +101,3 @@ def load_old_weights(learner, state_dict):
         layer.mha._inv_sqrt_d = layer.mha.key_size_per_head**0.5
     learner.fleet_attention._inv_sqrt_d = learner.fleet_attention.key_size_per_head**0.5
     learner.veh_attention._inv_sqrt_d = learner.veh_attention.key_size_per_head**0.5
-
