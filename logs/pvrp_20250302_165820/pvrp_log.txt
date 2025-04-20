@@ -1,3 +1,0 @@
-# PVRP Log - 2025-03-02 16:58:20
-# Format: route, mask, final statistics
-

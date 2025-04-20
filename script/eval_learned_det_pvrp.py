@@ -17,11 +17,11 @@ def main(args):
     n = args.customers_count
     m = args.vehicles_count
     epoch = args.epoch_count
-    date = "241230-1048"
+    date = "250419-1031"
     out_pdf_dir = f"./results/{pb}_n{n}m{m}_{time.strftime('%y%m%d-%H%M')}/"
     os.makedirs(out_pdf_dir, exist_ok = True)
     data_path = f"./data/{pb}_n{n}m{m}/norm_data_spoil_{args.spoilage_range[0]}_{args.spoilage_range[1]}.pyth"
-    model_path = f"./output/{pb}n{n}m{m}_{date}/chkpt_ep{epoch}.pyth"
+    model_path = f"./output/PVRPn{n}m{m}_{date}/chkpt_ep{epoch}.pyth" 
 
     print(f" {pb}_n{n}m{m} ".center(96, '-'))
 

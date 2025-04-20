@@ -23,21 +23,21 @@ TW_RATIO = (0.25,0.5,0.75,1.0)
 TW_RANGE = (30,91)
 DEG_OF_DYN = (0.1,0.25,0.5,0.75)
 APPEAR_EARLY_RATIO = (0.0,0.5,0.75,1.0)
-SPOILAGE_RANGE = (240,360)
+SPOILAGE_RANGE = (360,460)
 
 # PVRP reward/penalty coefficients
-SPOILAGE_PENALTY = 10.0
+SPOILAGE_PENALTY = 1.0
 EARLY_REWARD = 0.5
-UNSERVED_PENALTY = 10.0
+UNSERVED_PENALTY = 1.0
 DIST_PENALTY_COEF = 1.0
-PICKUP_BONUS_COEF = 5.0
-IDLE_PENALTY_COEF = 10.0
-ADDITIONAL_LATE_PENALTY = 10.0
+PICKUP_BONUS_COEF = 1.0
+IDLE_PENALTY_COEF = 100.0
+ADDITIONAL_LATE_PENALTY = 1.0
 CAPACITY_USAGE_COEF = 0.4
 
-PEND_COST = 2
+# PEND_COST = 2
 PEND_GROWTH = None
-LATE_COST = 1
+# LATE_COST = 1
 LATE_GROWTH = None
 SPEED_VAR = 0.1
 LATE_PROB = 0.05
@@ -50,9 +50,9 @@ HEAD_COUNT = 8
 FF_SIZE = 512
 TANH_XPLOR = 10
 
-EPOCH_COUNT = 20
-ITER_COUNT = 1000
-MINIBATCH_SIZE = 512
+EPOCH_COUNT = 10
+ITER_COUNT = 100
+MINIBATCH_SIZE = 8
 BASE_LR = 0.0001
 LR_DECAY = None
 MAX_GRAD_NORM = 2
@@ -66,8 +66,7 @@ CRITIC_USE_QVAL = False
 CRITIC_LR = 0.001
 CRITIC_DECAY = None
 
-TEST_BATCH_SIZE = 512
-
+TEST_BATCH_SIZE = 200
 OUTPUT_DIR = None
 RESUME_STATE = None
 CHECKPOINT_PERIOD = 5
@@ -108,9 +107,9 @@ def parse_args(argv = None):
 
     # Standard VRP Environment parameters
     group = parser.add_argument_group("VRP Environment parameters")
-    group.add_argument("--pending-cost", type = float, default = PEND_COST)
+    # group.add_argument("--pending-cost", type = float, default = PEND_COST)
     group.add_argument("--pend-cost-growth", type = float, default = PEND_GROWTH)
-    group.add_argument("--late-cost", type = float, default = LATE_COST)
+    # group.add_argument("--late-cost", type = float, default = LATE_COST)
     group.add_argument("--late-cost-growth", type = float, default = LATE_GROWTH)
     group.add_argument("--speed-var", type = float, default = SPEED_VAR)
     group.add_argument("--late-prob", type = float, default = LATE_PROB)

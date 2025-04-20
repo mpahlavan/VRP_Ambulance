@@ -5,3 +5,4 @@ results/
 pretrained/
 *.pdf
 *.pyth
+logs/

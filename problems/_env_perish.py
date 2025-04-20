@@ -74,8 +74,8 @@ class PVRP_Environment:
     CUST_FEAT_SIZE = 4  # x,y, demand(1), spoilage_time
 
     def __init__(self, data, nodes=None, cust_mask=None,
-                spoilage_penalty=2.0, unserved_penalty=1.0,pickup_bonus_coef=5.0,
-                additional_late_penalty=1.0, capacity_usage_coef=0.4,dist_penalty_coef=1.0, logger=None):
+                spoilage_penalty=1.0, unserved_penalty=30.0,pickup_bonus_coef=1.0,
+                additional_late_penalty=1.0, capacity_usage_coef=0.4,dist_penalty_coef=1.0,idle_penalty_coef =100, logger=None):
         self.veh_count = data.veh_count
         self.veh_capa = data.veh_capa
         self.veh_speed = data.veh_speed
@@ -88,9 +88,9 @@ class PVRP_Environment:
         self.dist_penalty_coef = dist_penalty_coef
         self.pickup_bonus_coef = pickup_bonus_coef
         self.additional_late_penalty = additional_late_penalty
-        # self.capacity_usage_coef = capacity_usage_coef
+        self.capacity_usage_coef = capacity_usage_coef
         # self.early_reward = early_reward
-        # self.idle_penalty_coef = idle_penalty_coef
+        self.idle_penalty_coef = idle_penalty_coef
 
        
         
@@ -157,6 +157,7 @@ class PVRP_Environment:
         
         # Update vehicle state
         self.cur_veh[:, :, :2] = dest[:, :, :2]  # Position x,y
+        #TODO:capability checking
         #self.cur_veh[:, :, 2] -= 1.0             # Capacity
         self.cur_veh[:, :, 3] += travel_time     # Time
         
@@ -412,7 +413,7 @@ class PVRP_Environment:
         dest = self.nodes.gather(1, 
             cust_idx[:, :, None].expand(-1, -1, self.CUST_FEAT_SIZE))
         
-          # ----- CAPACITY VALIDATION -----
+        # ----- CAPACITY VALIDATION -----
         # Check if any customer action would violate capacity constraints
         for b in range(self.minibatch_size):
             node_idx = cust_idx[b, 0].item()
@@ -439,17 +440,17 @@ class PVRP_Environment:
         pickup_bonus = self.pickup_bonus_coef * ontime_pickup
         reward = spoilage_penalty + pickup_bonus + distance_penalty
 
-        # Log rewards
-        for b in range(self.minibatch_size):
-            if cust_idx[b].item() > 0:  # Skip depot
-                self.logger.info(
-                    f"REWARD | B{b:03d} | "
-                    f"Node: {cust_idx[b].item():02d} | "
-                    f"Dist: {distance_penalty[b].item():6.2f} | "
-                    f"Spoil: {spoilage_penalty[b].item():6.2f} | "
-                    f"Pickup: {pickup_bonus[b].item():6.2f} | "
-                    f"Total: {reward[b].item():6.2f}"
-                )
+        # # Log rewards
+        # for b in range(self.minibatch_size):
+        #     if cust_idx[b].item() > 0:  # Skip depot
+        #         self.logger.info(
+        #             f"REWARD | B{b:03d} | "
+        #             f"Node: {cust_idx[b].item():02d} | "
+        #             f"Dist: {distance_penalty[b].item():6.2f} | "
+        #             f"Spoil: {spoilage_penalty[b].item():6.2f} | "
+        #             f"Pickup: {pickup_bonus[b].item():6.2f} | "
+        #             f"Total: {reward[b].item():6.2f}"
+        #         )
 
         # Update vehicle routes
         self.vehicle_routes.scatter_(1,
@@ -468,6 +469,7 @@ class PVRP_Environment:
                 float('inf'), 
                 device=self.nodes.device
             )
+            idle_penalty = torch.zeros_like(urgent_deadline)
             spoilage_times = self.nodes[:, :, 3]  # [batch_size, nodes_count]
             
             # Find minimum spoilage time for goods carried by each vehicle
@@ -483,7 +485,10 @@ class PVRP_Environment:
                     # Update urgent deadline if vehicle served any nodes
                     if indices.numel() > 0:
                         urgent_deadline[b, v] = spoilage_times[b, indices].min()
-            
+                    else:
+                        # Apply idle penalty if vehicle didn't serve any nodes
+                        idle_penalty[b, v] = -self.idle_penalty_coef    
+                    
             # Calculate gap between urgent deadlines and vehicle arrival times
             deadline_gap = urgent_deadline - arrival_time  # [batch_size, veh_count]
             
@@ -493,7 +498,7 @@ class PVRP_Environment:
             
             # Apply late penalty coefficient and sum across vehicles
             late_delivery_total = late_delivery_penalty.sum(dim=1, keepdim=True)  # [batch_size, 1]
-            late_penalty = self.additional_late_penalty * late_delivery_total
+            late_penalty = -self.additional_late_penalty * late_delivery_total
             
             # Log detailed deadline information
             for b in range(self.minibatch_size):
@@ -518,22 +523,42 @@ class PVRP_Environment:
             
             # Calculate unserved penalty
             unserved_penalty = -self.unserved_penalty * unserved
-            
+            idle_penalty = idle_penalty.sum(dim=1, keepdim=True)
             # Add final penalties to reward
-            reward = reward + unserved_penalty + late_penalty
+            reward = reward + unserved_penalty + late_penalty + idle_penalty
             
             # Log final statistics
-            self.logger.info("-" * 50)
+            # self.logger.info("-" * 50)
+            # for b in range(self.minibatch_size):
+            #     self.logger.info(
+            #         f"[FINAL] B{b:03d} | "
+            #         f"Served: {self.served[b].sum().item():02d} | "
+            #         f"Unserved: {unserved[b].item():.1f} | "
+            #         f"Late: {late_delivery_total[b].item():.1f} | "
+            #         f"Total: {reward[b].item():.1f}"
+            #     )
+            # self.logger.info("-" * 50)
+
+            # ----- CAPACITY UTILIZATION PENALTY -----
+            # Calculate visits per vehicle [batch, veh_count]
+            visits = self.vehicle_visit_count.float()
+            # Capacity scalar
+            capa = float(self.veh_capa)
+            # Utilization ratio
+            utilization = visits / capa
+            # Unused capacity ratio
+            unused_ratio = 1.0 - utilization
+            # Penalty proportional to total unused capacity
+            capacity_penalty = - self.capacity_usage_coef * unused_ratio.sum(dim=1, keepdim=True)
+            # Add to total reward
+            reward = reward + capacity_penalty
+
+            # Optional logging
             for b in range(self.minibatch_size):
                 self.logger.info(
-                    f"[FINAL] B{b:03d} | "
-                    f"Served: {self.served[b].sum().item():02d} | "
-                    f"Unserved: {unserved[b].item():.1f} | "
-                    f"Late: {late_delivery_total[b].item():.1f} | "
-                    f"Total: {reward[b].item():.1f}"
+                    f"CAP_UTIL | B{b:03d} | visits={visits[b].tolist()} | "
+                    f"penalty={capacity_penalty[b,0].item():.2f}"
                 )
-            self.logger.info("-" * 50)
-
         # Ensure reward is a tensor with proper shape
         if not isinstance(reward, torch.Tensor):
             reward = torch.tensor(reward, device=self.nodes.device)
