@@ -5,12 +5,12 @@ import copy
 import torch
 
 class RolloutBaseline(Baseline):
-    def __init__(self, learner, rollout_count = 1, update_threshold = 0.05):
+    def __init__(self, learner, rollout_count = 10, update_threshold = 0.05):
         super().__init__(learner, True)
 
         if not SCIPY_ENABLED:
             raise RuntimeError("Cannot use rollout baseline without scipy.stats.ttest_rel")
-
+ 
         self.learner = learner
         self.policy = copy.deepcopy(learner)
         self.policy.eval()
