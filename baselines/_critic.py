@@ -21,14 +21,10 @@ class CriticBaseline(Baseline):
         super().__init__(learner, use_cumul_reward)
         self.use_qval = use_qval
         
-        # Define output_dim based on whether Q-values or V-values are estimated
-        # If use_qval is True, output is a value for each possible customer (node 0 to cust_count).
-        # If use_qval is False, output is a single value for the state.
+       
         output_dim = cust_count + 1 if use_qval else 1
         
-        # The input to the critic is 'compat' from the AttentionLearner,
-        # which has dimensions [batch_size, 1, nodes_count].
-        # So, the input to the first linear layer is nodes_count (cust_count + 1).
+        
         input_dim = cust_count + 1 
         
         # Build the Multi-Layer Perceptron (MLP) for the critic
