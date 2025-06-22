@@ -13,7 +13,7 @@ class PVRP_Dataset(Dataset):
             cust_count = 10,
             veh_count = 2,
             veh_capa = 5,
-            veh_speed = 1,
+            veh_speed = 2,
             min_cust_count = None,
             cust_loc_range = (0,101),
             horizon = 480,

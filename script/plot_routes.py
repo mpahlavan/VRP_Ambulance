@@ -8,7 +8,7 @@ import torch
 import time, os
 
 SEED = 12348877555
-BATCH_SIZE = 400
+BATCH_SIZE = 3200
 mpl.rcParams["axes.titlesize"] = 20
 
 class PVRPAnalyzer:
@@ -22,7 +22,7 @@ class PVRPAnalyzer:
         self.cust_loc_range = args.loc_range
         self.horizon = args.horizon
         self.spoilage_range = args.spoilage_range
-        date = "250524-1621"
+        date = "250621-1209"
         self.MODEL_PATH = f"./output/PVRPn{args.customers_count}m{args.vehicles_count}_{date}/chkpt_ep{args.epoch_count}.pyth"
         self.learner = self._load_model()
         

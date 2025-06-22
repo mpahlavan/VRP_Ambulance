@@ -74,8 +74,8 @@ class PVRP_Environment:
     CUST_FEAT_SIZE = 4  # x,y, demand(1), spoilage_time
 
     def __init__(self, data, nodes=None, cust_mask=None,
-                spoilage_penalty=5.0, unserved_penalty=30.0,pickup_bonus_coef=2.0,
-                additional_late_penalty=5.0, capacity_usage_coef=2.0,dist_penalty_coef=1.0,idle_penalty_coef =100, logger=None):
+                spoilage_penalty=0.05, unserved_penalty=0.5,pickup_bonus_coef=0.05,
+                additional_late_penalty=1, capacity_usage_coef=0.0,dist_penalty_coef=0.05,idle_penalty_coef =10, logger=None):
         self.veh_count = data.veh_count
         self.veh_capa = data.veh_capa
         self.veh_speed = data.veh_speed
@@ -263,7 +263,8 @@ class PVRP_Environment:
             self.mask |
             self.served.unsqueeze(1).expand(-1, self.veh_count, -1) |  # Served nodes
             full_capacity_mask |  # Capacity constraints
-            self.veh_done.unsqueeze(-1).expand(-1, -1, self.nodes_count)   # Done vehicles
+            self.veh_done.unsqueeze(-1).expand(-1, -1, self.nodes_count) |  # Done vehicles
+            self.infeasible_nodes.unsqueeze(1)
         )
         self.mask[:, :, 0] = 0  # Depot always available
 
@@ -282,63 +283,67 @@ class PVRP_Environment:
                 self.logger.info(f"| MASK | B{b:03d} | V{veh_idx} sees no nodes (capacity={remaining_capacity[b, 0].item():.1f})")
     
     
-    def _update_cur_veh(self):
-        """
-        Select the next vehicle using round-robin assignment
-        This ensures all vehicles get a chance to be utilized
-        """
-        batch_size = self.minibatch_size
-        
-        # Initialize next_vehicle_idx tensor if first call
-        if not hasattr(self, 'next_vehicle_idx'):
-            self.next_vehicle_idx = torch.zeros((batch_size,), dtype=torch.long, device=self.nodes.device)
-        
-        # Store current vehicle indices before updating
-        self.cur_veh_idx = torch.zeros((batch_size, 1), dtype=torch.long, device=self.nodes.device)
-        
-        # Implement round-robin selection for each batch
-        for b in range(batch_size):
-            # Start from the next vehicle in sequence
-            v_idx = self.next_vehicle_idx[b]
-            
-            # Find next available vehicle (not done)
-            attempts = 0
-            while self.veh_done[b, v_idx] and attempts < self.veh_count:
-                v_idx = (v_idx + 1) % self.veh_count
-                attempts += 1
-            
-            # If we checked all vehicles and they're all done, use the first one
-            # (this should only happen if all vehicles are done)
-            if attempts == self.veh_count:
-                v_idx = 0
-                
-            # Assign selected vehicle for this batch
-            self.cur_veh_idx[b, 0] = v_idx
-            
-            # Update next_vehicle_idx for next call (move to next vehicle)
-            self.next_vehicle_idx[b] = (v_idx + 1) % self.veh_count
-        
-        # Get vehicle state based on selected indices
-        self.cur_veh = self.vehicles.gather(1,
-            self.cur_veh_idx[:, :, None].expand(-1, -1, self.VEH_STATE_SIZE))
-        
-        # Update vehicle mask
-        self.cur_veh_mask = self.mask.gather(1,
-            self.cur_veh_idx[:, :, None].expand(-1, -1, self.nodes_count))
-        
-        # Log vehicle selection
-        for b in range(batch_size):
-            self.logger.info(f"VEH_SELECT | B{b:03d} | Selected V{self.cur_veh_idx[b, 0].item()} | " +
-                            f"Time={self.cur_veh[b, 0, 3].item():.1f} | " +
-                            f"Cap={self.cur_veh[b, 0, 2].item():.1f}")    
     # def _update_cur_veh(self):
-    #     avail = self.vehicles[:, :, 3].clone()
-    #     avail[self.veh_done] = float('inf')
-    #     self.cur_veh_idx = avail.argmin(1, keepdim=True)
+    #     """
+    #     Select the next vehicle using round-robin assignment
+    #     This ensures all vehicles get a chance to be utilized
+    #     """
+    #     batch_size = self.minibatch_size
+        
+    #     # Initialize next_vehicle_idx tensor if first call
+    #     if not hasattr(self, 'next_vehicle_idx'):
+    #         self.next_vehicle_idx = torch.zeros((batch_size,), dtype=torch.long, device=self.nodes.device)
+        
+    #     # Store current vehicle indices before updating
+    #     self.cur_veh_idx = torch.zeros((batch_size, 1), dtype=torch.long, device=self.nodes.device)
+        
+    #     # Implement round-robin selection for each batch
+    #     for b in range(batch_size):
+    #         # Start from the next vehicle in sequence
+    #         v_idx = self.next_vehicle_idx[b]
+            
+    #         # Find next available vehicle (not done)
+    #         attempts = 0
+    #         while self.veh_done[b, v_idx] and attempts < self.veh_count:
+    #             v_idx = (v_idx + 1) % self.veh_count
+    #             attempts += 1
+            
+    #         # If we checked all vehicles and they're all done, use the first one
+    #         # (this should only happen if all vehicles are done)
+    #         if attempts == self.veh_count:
+    #             v_idx = 0
+                
+    #         # Assign selected vehicle for this batch
+    #         self.cur_veh_idx[b, 0] = v_idx
+            
+    #         # Update next_vehicle_idx for next call (move to next vehicle)
+    #         self.next_vehicle_idx[b] = (v_idx + 1) % self.veh_count
+        
+    #     # Get vehicle state based on selected indices
     #     self.cur_veh = self.vehicles.gather(1,
     #         self.cur_veh_idx[:, :, None].expand(-1, -1, self.VEH_STATE_SIZE))
+        
+    #     # Update vehicle mask
     #     self.cur_veh_mask = self.mask.gather(1,
     #         self.cur_veh_idx[:, :, None].expand(-1, -1, self.nodes_count))
+        
+    #     # Log vehicle selection
+    #     for b in range(batch_size):
+    #         self.logger.info(f"VEH_SELECT | B{b:03d} | Selected V{self.cur_veh_idx[b, 0].item()} | " +
+    #                         f"Time={self.cur_veh[b, 0, 3].item():.1f} | " +
+    #                         f"Cap={self.cur_veh[b, 0, 2].item():.1f}") 
+
+
+
+    def _update_cur_veh(self):
+        avail = self.vehicles[:, :, 3].clone()
+        
+        avail[self.veh_done] = float('inf')
+        self.cur_veh_idx = avail.argmin(1, keepdim=True)
+        self.cur_veh = self.vehicles.gather(1,
+            self.cur_veh_idx[:, :, None].expand(-1, -1, self.VEH_STATE_SIZE))
+        self.cur_veh_mask = self.mask.gather(1,
+            self.cur_veh_idx[:, :, None].expand(-1, -1, self.nodes_count))
        
     def reset(self):
         # Initialize vehicles [batch, veh_count, VEH_STATE_SIZE]
@@ -411,211 +416,334 @@ class PVRP_Environment:
         #                 self.logger.info(f"| MASK | B{b:03d} | V{v} sees nodes: [{visible_nodes_str}]")
 
 
-
     def step(self, cust_idx):
         """
-        Execute a step in the environment
-        
-        Args:
-            cust_idx: Customer indices to visit
-            
-        Returns:
-            reward: Reward for the action
-        """
-        # Get destination info
-        dest = self.nodes.gather(1, 
-            cust_idx[:, :, None].expand(-1, -1, self.CUST_FEAT_SIZE))
-        
-        # ----- CAPACITY VALIDATION -----
-        # Check if any customer action would violate capacity constraints
-        for b in range(self.minibatch_size):
-            node_idx = cust_idx[b, 0].item()
-            if node_idx > 0:  # Only check for customer nodes (not depot)
-                remaining_capacity = self.cur_veh[b, 0, 2].item()
-                if remaining_capacity < 1:
-                    self.logger.info(f"CAPACITY ERROR | B{b:03d} | Attempt to visit node {node_idx} " +
-                                    f"with insufficient capacity {remaining_capacity:.1f}")
-                    # Force return to depot instead of violating capacity
-                    cust_idx[b, 0] = 0
-        # ------------------------------
+        یک گام در محیط اجرا می‌کند.
 
-        # Update vehicle state and get feedback
-        dist, lateness, ontime_pickup = self._update_vehicles(dest, cust_idx)
-        
-        # Update state 
+        Args:
+            cust_idx (LongTensor [B,1]): ایندکس مشتری انتخاب-شده (۰ = دپو)
+
+        Returns:
+            reward (FloatTensor [B,1]): پاداش این گام
+        --------------------------------------------------------------------
+        سیاست جدید:
+        ▫️ در هر گام فقط یک shaping کوچک (مسافت–اسپویل) می‌دهیم؛
+        ▫️ در پایان اپیزود، جریمه اصلی روی
+                – late-nodes  (برداشتِ دیر به گره)
+                – late-at-depot (رسیدن دیر محموله به دپو)
+                – unserved      (گره‌های قابل خدمت ولی بدون سرویس)
+        محاسبه می‌شود.
+        """
+
+        # ------------------------------------------------
+        # 1) ظرفیت را چک کن
+        # ------------------------------------------------
+        for b in range(self.minibatch_size):
+            node = cust_idx[b, 0].item()
+            if node > 0 and self.cur_veh[b, 0, 2].item() < 1:
+                self.logger.info(f"CAPACITY ERROR | B{b:03d} | node {node} بدون ظرفیت")
+                cust_idx[b, 0] = 0                         # اجباراً برگشت به دپو
+
+        # ------------------------------------------------
+        # 2) به‌روزرسانی وضعیت وسیله
+        # ------------------------------------------------
+        dest   = self.nodes.gather(1, cust_idx[:, :, None]
+                                .expand(-1, -1, self.CUST_FEAT_SIZE))
+        dist, node_late, node_ontime = self._update_vehicles(dest, cust_idx)
+
         self._update_done(cust_idx)
         self._update_mask(cust_idx)
         self._update_cur_veh()
 
-        # Immediate rewards
-        # distance_penalty = - dist
-        spoilage_penalty = -self.spoilage_penalty * lateness
-        pickup_bonus = self.pickup_bonus_coef * ontime_pickup
-        reward = spoilage_penalty + pickup_bonus 
-        # # Log rewards
-        # for b in range(self.minibatch_size):
-        #     if cust_idx[b].item() > 0:  # Skip depot
-        #         self.logger.info(
-        #             f"REWARD | B{b:03d} | "
-        #             f"Node: {cust_idx[b].item():02d} | "
-        #             f"Dist: {distance_penalty[b].item():6.2f} | "
-        #             f"Spoil: {spoilage_penalty[b].item():6.2f} | "
-        #             f"Pickup: {pickup_bonus[b].item():6.2f} | "
-        #             f"Total: {reward[b].item():6.2f}"
-        #         )
+        # ------------------------------------------------
+        # 3) پاداش لحظه‌ای (shaping سبک)
+        # ------------------------------------------------
+        step_reward = (-self.spoilage_penalty * node_late +
+                    self.pickup_bonus_coef * node_ontime -
+                    self.dist_penalty_coef * dist)          # اندازه کوچک
+        reward = step_reward.clone()
 
-        # Update vehicle routes
-        self.vehicle_routes.scatter_(1,
-            cust_idx,
-            self.cur_veh_idx.expand(-1, cust_idx.size(1))
-        )
-        
-        # Calculate final rewards at episode end
+        # ------------------------------------------------
+        # 4) پایان اپیزود : جریمه‌های اصلی
+        # ------------------------------------------------
         if self.done:
-            self.logger.info("[DEBUG] Episode completed normally.")
 
-            # At episode end, add a global route efficiency reward
+            # -------- 4-A) دیرکرد سطح گره (همان قبلی) --------
+            feasible_mask = ~self.infeasible_nodes                  # [B,N]
+            node_late_cnt = (self.late_nodes & feasible_mask)\
+                                .float().sum(dim=1, keepdim=True)
 
-            # Calculate total route distances
-            total_distance = 0
-            for v in range(self.veh_count):
-                v_indices = []
-                for b in range(self.minibatch_size):
-                    # Get nodes visited by this vehicle
-                    nodes = (self.vehicle_routes[b] == v).nonzero(as_tuple=True)[0].tolist()
-                    if nodes:
-                        # Add depot as first and last stop
-                        route = [0] + nodes + [0]
-                        # Calculate route distance
-                        positions = self.nodes[b, route, :2]
-                        segments = positions[1:] - positions[:-1]
-                        route_dist = segments.norm(dim=1).sum()
-                        total_distance += route_dist
-                        
-            # Add global efficiency bonus/penalty
-            global_distance_factor = -self.dist_penalty_coef * total_distance
-            reward = reward + global_distance_factor
+            # -------- 4-B) دیرکرد «رسیدن به دپو» برای هر محموله --------
+            # - برای هر وسیله، کوچکترین spoilageِ کالاهای حمل شده را deadline می‌گیریم
+            # - اگر arrival-in-depot > آن deadline → دیرکرد در دپو
+            arrival_t = self.vehicles[:, :, 3]                      # [B,V]
+            spoilage   = self.nodes[:, :, 3]                        # [B,N]
+            late_at_depot_cnt = torch.zeros_like(node_late_cnt)
 
-            # Get final vehicle arrival times
-            arrival_time = self.vehicles[:, :, 3]  # [batch_size, veh_count]
-            
-            # Calculate urgent deadlines for each vehicle
-            urgent_deadline = torch.full(
-                (self.minibatch_size, self.veh_count), 
-                float('inf'), 
-                device=self.nodes.device
-            )
-            idle_penalty = torch.zeros_like(urgent_deadline)
-            spoilage_times = self.nodes[:, :, 3]  # [batch_size, nodes_count]
-            
-            # Find minimum spoilage time for goods carried by each vehicle
-            # Replace the existing idle penalty calculation with this:
             for v in range(self.veh_count):
                 for b in range(self.minibatch_size):
-                    # Use visits count to determine if vehicle was used
-                    if self.vehicle_visit_count[b, v] == 0:
-                        # Apply idle penalty if vehicle has zero visits
-                        idle_penalty[b, v] = -self.idle_penalty_coef
-                    else:
-                        # If vehicle served any nodes, calculate deadline as before
-                        mask_v = (self.vehicle_routes == v)
-                        indices = torch.nonzero(
-                            mask_v[b] & (torch.arange(self.nodes_count, device=self.nodes.device) > 0),
-                            as_tuple=False
-                        ).squeeze(-1)
-                        
-                        if indices.numel() > 0:
-                            urgent_deadline[b, v] = spoilage_times[b, indices].min()
-                        else:
-                            # Apply idle penalty if vehicle didn't serve any nodes
-                            idle_penalty[b, v] = -self.idle_penalty_coef    
-                    
-            # Calculate gap between urgent deadlines and vehicle arrival times
-            deadline_gap = urgent_deadline - arrival_time  # [batch_size, veh_count]
-            
-            # Negative gap means late arrival at depot
-            # Convert positive gaps to 0 (no penalty for early arrival)
-            late_delivery_penalty = -torch.clamp(deadline_gap, max=0)
-            
-            # Apply late penalty coefficient and sum across vehicles
-            late_delivery_total = late_delivery_penalty.sum(dim=1, keepdim=True)  # [batch_size, 1]
-            late_penalty = -self.additional_late_penalty * late_delivery_total
-            
-            # Log detailed deadline information
-            for b in range(self.minibatch_size):
-                vehicle_info = []
-                for v in range(self.veh_count):
-                    if urgent_deadline[b, v] < float('inf'):
-                        vehicle_info.append(
-                            f"V{v}: arrival={arrival_time[b,v]:.1f}, "
-                            f"deadline={urgent_deadline[b,v]:.1f}, "
-                            f"gap={deadline_gap[b,v]:.1f}"
-                        )
-                if vehicle_info:
-                    self.logger.info(f"DEADLINE | B{b:03d} | " + " | ".join(vehicle_info))
-            
-            # Account for nodes that couldn't be served
-            if self.init_cust_mask is not None:
-                # Ignore masked nodes when calculating unserved
-                effective_mask = ~self.init_cust_mask.bool()
-                unserved = (effective_mask & ~self.served & ~self.infeasible_nodes).float().sum(dim=1, keepdim=True)
-            else:
-                unserved = (~self.served & ~self.infeasible_nodes).float().sum(dim=1, keepdim=True)
-            
-            # Calculate unserved penalty
-            unserved_penalty = -self.unserved_penalty * unserved
-            idle_penalty = idle_penalty.sum(dim=1, keepdim=True)
-            # Add final penalties to reward
-            reward = reward + unserved_penalty + late_penalty + idle_penalty
-            
-            # Log final statistics
-            # self.logger.info("-" * 50)
-            # for b in range(self.minibatch_size):
-            #     self.logger.info(
-            #         f"[FINAL] B{b:03d} | "
-            #         f"Served: {self.served[b].sum().item():02d} | "
-            #         f"Unserved: {unserved[b].item():.1f} | "
-            #         f"Late: {late_delivery_total[b].item():.1f} | "
-            #         f"Total: {reward[b].item():.1f}"
-            #     )
-            # self.logger.info("-" * 50)
+                    served_nodes = (self.vehicle_routes[b] == v) & \
+                                (torch.arange(self.nodes_count,
+                                                device=self.nodes.device) > 0)
+                    if served_nodes.any():
+                        deadline = spoilage[b, served_nodes].min()
+                        if arrival_t[b, v] > deadline:            # دیر رسیده
+                            late_at_depot_cnt[b, 0] += 1.0
 
-            # ----- CAPACITY UTILIZATION PENALTY -----
-            # Calculate visits per vehicle [batch, veh_count]
-            visits = self.vehicle_visit_count.float()
-            # Capacity scalar
-            capa = float(self.veh_capa)
-            # Utilization ratio
-            utilization = visits / capa
-            # Unused capacity ratio
-            unused_ratio = 1.0 - utilization
-            # Penalty proportional to total unused capacity
-            capacity_penalty = - self.capacity_usage_coef * unused_ratio.sum(dim=1, keepdim=True)
-            # Add to total reward
-            reward = reward + capacity_penalty
-            
-            ######
-            self.last_reward = reward.clone()
+            # -------- 4-C) unserved روی گره‌های قابل خدمت --------
+            unserved_cnt = (~self.served & feasible_mask)\
+                            .float().sum(dim=1, keepdim=True)
 
-            # Optional logging
+            # -------- 4-D) جریمه‌ها --------
+            J_node   = - self.additional_late_penalty * node_late_cnt
+            J_depot  = - self.additional_late_penalty * late_at_depot_cnt
+            J_unserv = - self.unserved_penalty       * unserved_cnt
+
+            # -------- 4-E) shaping کل مسافت --------
+            total_dist = 0.0
+            for v in range(self.veh_count):
+                for b in range(self.minibatch_size):
+                    ns = (self.vehicle_routes[b] == v)\
+                        .nonzero(as_tuple=True)[0].tolist()
+                    if ns:
+                        route = [0] + ns + [0]
+                        pos   = self.nodes[b, route, :2]
+                        total_dist += (pos[1:] - pos[:-1]).norm(dim=1).sum()
+
+            J_dist = - self.dist_penalty_coef * total_dist
+
+            # -------- 4-F) جمع نهایی و لاگ --------
+            final_reward = J_node + J_depot + J_unserv + J_dist
+            reward += final_reward
+
             for b in range(self.minibatch_size):
                 self.logger.info(
-                    f"[DEBUG] Final rewards B{b:03d} | "
-                    f"Unserved Penalty: {unserved_penalty[b].item():.1f} | "
-                    f"Late Penalty: {late_penalty[b].item():.1f} | "
-                    f"Idle Penalty: {idle_penalty[b].sum().item():.1f} | "
-                    f"Total Reward: {reward[b].item():.1f}"
-                    f"CAP_UTIL | B{b:03d} | visits={visits[b].tolist()} | "
-                    f"penalty={capacity_penalty[b,0].item():.2f}"
-                
+                    f"[FINAL] B{b:03d} | "
+                    f"late_node={node_late_cnt[b,0]:.0f} | "
+                    f"late_depot={late_at_depot_cnt[b,0]:.0f} | "
+                    f"unserved={unserved_cnt[b,0]:.0f} | "
+                    f"dist={total_dist:.1f} | "
+                    f"reward={reward[b,0]:.1f}"
                 )
-        # Ensure reward is a tensor with proper shape
-        if not isinstance(reward, torch.Tensor):
-            reward = torch.tensor(reward, device=self.nodes.device)
+
+            self.last_reward = reward.clone()
+
+        # ------------------------------------------------
+        # 5) شکل خروجی
+        # ------------------------------------------------
         if reward.dim() == 1:
             reward = reward.unsqueeze(-1)
-        
         return reward
+
+
+
+
+
+
+    # def step(self, cust_idx):
+    #     """
+    #     Execute a step in the environment
+        
+    #     Args:
+    #         cust_idx: Customer indices to visit
+            
+    #     Returns:
+    #         reward: Reward for the action
+    #     """
+    #     # Get destination info
+    #     dest = self.nodes.gather(1, 
+    #         cust_idx[:, :, None].expand(-1, -1, self.CUST_FEAT_SIZE))
+        
+    #     # ----- CAPACITY VALIDATION -----
+    #     # Check if any customer action would violate capacity constraints
+    #     for b in range(self.minibatch_size):
+    #         node_idx = cust_idx[b, 0].item()
+    #         if node_idx > 0:  # Only check for customer nodes (not depot)
+    #             remaining_capacity = self.cur_veh[b, 0, 2].item()
+    #             if remaining_capacity < 1:
+    #                 self.logger.info(f"CAPACITY ERROR | B{b:03d} | Attempt to visit node {node_idx} " +
+    #                                 f"with insufficient capacity {remaining_capacity:.1f}")
+    #                 # Force return to depot instead of violating capacity
+    #                 cust_idx[b, 0] = 0
+    #     # ------------------------------
+
+    #     # Update vehicle state and get feedback
+    #     dist, lateness, ontime_pickup = self._update_vehicles(dest, cust_idx)
+        
+    #     # Update state 
+    #     self._update_done(cust_idx)
+    #     self._update_mask(cust_idx)
+    #     self._update_cur_veh()
+
+    #     # Immediate rewards
+    #     # distance_penalty = - dist
+    #     spoilage_penalty = -self.spoilage_penalty * lateness
+    #     pickup_bonus = self.pickup_bonus_coef * ontime_pickup
+    #     reward = spoilage_penalty + pickup_bonus 
+    #     # # Log rewards
+    #     # for b in range(self.minibatch_size):
+    #     #     if cust_idx[b].item() > 0:  # Skip depot
+    #     #         self.logger.info(
+    #     #             f"REWARD | B{b:03d} | "
+    #     #             f"Node: {cust_idx[b].item():02d} | "
+    #     #             f"Dist: {distance_penalty[b].item():6.2f} | "
+    #     #             f"Spoil: {spoilage_penalty[b].item():6.2f} | "
+    #     #             f"Pickup: {pickup_bonus[b].item():6.2f} | "
+    #     #             f"Total: {reward[b].item():6.2f}"
+    #     #         )
+
+    #     # Update vehicle routes
+    #     self.vehicle_routes.scatter_(1,
+    #         cust_idx,
+    #         self.cur_veh_idx.expand(-1, cust_idx.size(1))
+    #     )
+        
+    #     # Calculate final rewards at episode end
+    #     if self.done:
+    #         self.logger.info("[DEBUG] Episode completed normally.")
+
+    #         # At episode end, add a global route efficiency reward
+
+    #         # Calculate total route distances
+    #         total_distance = 0
+    #         for v in range(self.veh_count):
+    #             v_indices = []
+    #             for b in range(self.minibatch_size):
+    #                 # Get nodes visited by this vehicle
+    #                 nodes = (self.vehicle_routes[b] == v).nonzero(as_tuple=True)[0].tolist()
+    #                 if nodes:
+    #                     # Add depot as first and last stop
+    #                     route = [0] + nodes + [0]
+    #                     # Calculate route distance
+    #                     positions = self.nodes[b, route, :2]
+    #                     segments = positions[1:] - positions[:-1]
+    #                     route_dist = segments.norm(dim=1).sum()
+    #                     total_distance += route_dist
+                        
+    #         # Add global efficiency bonus/penalty
+    #         global_distance_factor = -self.dist_penalty_coef * total_distance
+    #         reward = reward + global_distance_factor
+
+    #         # Get final vehicle arrival times
+    #         arrival_time = self.vehicles[:, :, 3]  # [batch_size, veh_count]
+            
+    #         # Calculate urgent deadlines for each vehicle
+    #         urgent_deadline = torch.full(
+    #             (self.minibatch_size, self.veh_count), 
+    #             float('inf'), 
+    #             device=self.nodes.device
+    #         )
+    #         idle_penalty = torch.zeros_like(urgent_deadline)
+    #         spoilage_times = self.nodes[:, :, 3]  # [batch_size, nodes_count]
+            
+    #         # Find minimum spoilage time for goods carried by each vehicle
+    #         # Replace the existing idle penalty calculation with this:
+    #         for v in range(self.veh_count):
+    #             for b in range(self.minibatch_size):
+    #                 # Use visits count to determine if vehicle was used
+    #                 if self.vehicle_visit_count[b, v] == 0:
+    #                     # Apply idle penalty if vehicle has zero visits
+    #                     idle_penalty[b, v] = -self.idle_penalty_coef
+    #                 else:
+    #                     # If vehicle served any nodes, calculate deadline as before
+    #                     mask_v = (self.vehicle_routes == v)
+    #                     indices = torch.nonzero(
+    #                         mask_v[b] & (torch.arange(self.nodes_count, device=self.nodes.device) > 0),
+    #                         as_tuple=False
+    #                     ).squeeze(-1)
+                        
+    #                     if indices.numel() > 0:
+    #                         urgent_deadline[b, v] = spoilage_times[b, indices].min()
+    #                     else:
+    #                         # Apply idle penalty if vehicle didn't serve any nodes
+    #                         idle_penalty[b, v] = -self.idle_penalty_coef    
+                    
+    #         # Calculate gap between urgent deadlines and vehicle arrival times
+    #         deadline_gap = urgent_deadline - arrival_time  # [batch_size, veh_count]
+            
+    #         # Negative gap means late arrival at depot
+    #         # Convert positive gaps to 0 (no penalty for early arrival)
+    #         late_delivery_penalty = -torch.clamp(deadline_gap, max=0)
+            
+    #         # Apply late penalty coefficient and sum across vehicles
+    #         late_delivery_total = late_delivery_penalty.sum(dim=1, keepdim=True)  # [batch_size, 1]
+    #         late_penalty = -self.additional_late_penalty * late_delivery_total
+            
+    #         # Log detailed deadline information
+    #         for b in range(self.minibatch_size):
+    #             vehicle_info = []
+    #             for v in range(self.veh_count):
+    #                 if urgent_deadline[b, v] < float('inf'):
+    #                     vehicle_info.append(
+    #                         f"V{v}: arrival={arrival_time[b,v]:.1f}, "
+    #                         f"deadline={urgent_deadline[b,v]:.1f}, "
+    #                         f"gap={deadline_gap[b,v]:.1f}"
+    #                     )
+    #             if vehicle_info:
+    #                 self.logger.info(f"DEADLINE | B{b:03d} | " + " | ".join(vehicle_info))
+            
+    #         # Account for nodes that couldn't be served
+    #         if self.init_cust_mask is not None:
+    #             # Ignore masked nodes when calculating unserved
+    #             effective_mask = ~self.init_cust_mask.bool()
+    #             unserved = (effective_mask & ~self.served & ~self.infeasible_nodes).float().sum(dim=1, keepdim=True)
+    #         else:
+    #             unserved = (~self.served & ~self.infeasible_nodes).float().sum(dim=1, keepdim=True)
+            
+    #         # Calculate unserved penalty
+    #         unserved_penalty = -self.unserved_penalty * unserved
+    #         idle_penalty = idle_penalty.sum(dim=1, keepdim=True)
+    #         # Add final penalties to reward
+    #         reward = reward + unserved_penalty + late_penalty + idle_penalty
+            
+    #         # Log final statistics
+    #         # self.logger.info("-" * 50)
+    #         # for b in range(self.minibatch_size):
+    #         #     self.logger.info(
+    #         #         f"[FINAL] B{b:03d} | "
+    #         #         f"Served: {self.served[b].sum().item():02d} | "
+    #         #         f"Unserved: {unserved[b].item():.1f} | "
+    #         #         f"Late: {late_delivery_total[b].item():.1f} | "
+    #         #         f"Total: {reward[b].item():.1f}"
+    #         #     )
+    #         # self.logger.info("-" * 50)
+
+    #         # ----- CAPACITY UTILIZATION PENALTY -----
+    #         # Calculate visits per vehicle [batch, veh_count]
+    #         visits = self.vehicle_visit_count.float()
+    #         # Capacity scalar
+    #         capa = float(self.veh_capa)
+    #         # Utilization ratio
+    #         utilization = visits / capa
+    #         # Unused capacity ratio
+    #         unused_ratio = 1.0 - utilization
+    #         # Penalty proportional to total unused capacity
+    #         capacity_penalty = - self.capacity_usage_coef * unused_ratio.sum(dim=1, keepdim=True)
+    #         # Add to total reward
+    #         reward = reward + capacity_penalty
+            
+    #         ######
+    #         self.last_reward = reward.clone()
+
+    #         # Optional logging
+    #         for b in range(self.minibatch_size):
+    #             self.logger.info(
+    #                 f"[DEBUG] Final rewards B{b:03d} | "
+    #                 f"Unserved Penalty: {unserved_penalty[b].item():.1f} | "
+    #                 f"Late Penalty: {late_penalty[b].item():.1f} | "
+    #                 f"Idle Penalty: {idle_penalty[b].sum().item():.1f} | "
+    #                 f"Total Reward: {reward[b].item():.1f}"
+    #                 f"CAP_UTIL | B{b:03d} | visits={visits[b].tolist()} | "
+    #                 f"penalty={capacity_penalty[b,0].item():.2f}"
+                
+    #             )
+    #     # Ensure reward is a tensor with proper shape
+    #     if not isinstance(reward, torch.Tensor):
+    #         reward = torch.tensor(reward, device=self.nodes.device)
+    #     if reward.dim() == 1:
+    #         reward = reward.unsqueeze(-1)
+        
+    #     return reward
 
     def get_state(self):
         """Return current state"""

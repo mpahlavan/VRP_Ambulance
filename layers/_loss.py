@@ -37,7 +37,7 @@ def reinforce_loss(logprobs, rewards, baseline = None, weights = None, discount 
         vals = []
         for r in reversed(rewards):
             cumul = r + discount * cumul
-            vals.append(cumul)
+            vals.append(cumul.squeeze(-1))
         vals.reverse()
 
         loss = []

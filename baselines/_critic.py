@@ -2,13 +2,59 @@ from marpdan.baselines._base import Baseline
 
 import torch
 import torch.nn as nn
-
+import torch.nn.functional as F # Added for ReLU activation
 
 class CriticBaseline(Baseline):
-    def __init__(self, learner, cust_count, use_qval = True, use_cumul_reward = False):
+    def __init__(self, learner, cust_count, use_qval=True, use_cumul_reward=False, hidden_size=128, num_layers=2):
+        """
+        Initializes the CriticBaseline.
+
+        Args:
+            learner: The AttentionLearner (Actor) instance.
+            cust_count: Number of customers (nodes - 1).
+            use_qval: If True, the critic estimates Q-values (per action). If False, it estimates V-values (per state).
+                      (Your config uses False, so it estimates V-values).
+            use_cumul_reward: If True, uses cumulative rewards. If False, uses immediate rewards (handled by reinforce_loss).
+            hidden_size: Dimension of the hidden layers in the Critic's MLP.
+            num_layers: Number of hidden layers in the Critic's MLP.
+        """
         super().__init__(learner, use_cumul_reward)
         self.use_qval = use_qval
-        self.project = nn.Linear(cust_count+1, cust_count+1 if use_qval else 1, bias = False)
+        
+        # Define output_dim based on whether Q-values or V-values are estimated
+        # If use_qval is True, output is a value for each possible customer (node 0 to cust_count).
+        # If use_qval is False, output is a single value for the state.
+        output_dim = cust_count + 1 if use_qval else 1
+        
+        # The input to the critic is 'compat' from the AttentionLearner,
+        # which has dimensions [batch_size, 1, nodes_count].
+        # So, the input to the first linear layer is nodes_count (cust_count + 1).
+        input_dim = cust_count + 1 
+        
+        # Build the Multi-Layer Perceptron (MLP) for the critic
+        layers = []
+        
+        # Input layer
+        layers.append(nn.Linear(input_dim, hidden_size))
+        layers.append(nn.ReLU()) # Non-linear activation for hidden layers
+
+        # Hidden layers
+        for _ in range(num_layers - 1): # If num_layers is 1, this loop won't run.
+            layers.append(nn.Linear(hidden_size, hidden_size))
+            layers.append(nn.ReLU())
+        
+        # Output layer
+        # No activation function on the output layer for value estimation (regression task)
+        layers.append(nn.Linear(hidden_size, output_dim)) 
+
+        self.project = nn.Sequential(*layers)
+        
+        # Optional: Initialize weights for better training stability
+        for m in self.project:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight) # Glorot uniform initialization
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0) # Initialize biases to zero
 
     def eval_step(self, vrp_dynamics, learner_compat, cust_idx):
         compat = learner_compat.clone()

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 class AttentionLearner(nn.Module):
     def __init__(self, cust_feat_size, veh_state_size, model_size=128,
-                 layer_count=3, head_count=8, ff_size=512, tanh_xplor=10, greedy=False):
+                 layer_count=3, head_count=8, ff_size=512, tanh_xplor=5, greedy=False):
         super().__init__()
         self.model_size = model_size
         self.inv_sqrt_d = model_size ** -0.5
