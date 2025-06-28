@@ -26,14 +26,15 @@ APPEAR_EARLY_RATIO = (0.0,0.5,0.75,1.0)
 SPOILAGE_RANGE = (360,460)
 
 # PVRP reward/penalty coefficients
-SPOILAGE_PENALTY = 0.05
+SPOILAGE_PENALTY = 1.0
 EARLY_REWARD = 0.5
-UNSERVED_PENALTY = 0.5
+UNSERVED_PENALTY = 0.8
 DIST_PENALTY_COEF = 0.05
 PICKUP_BONUS_COEF = 0.05
 IDLE_PENALTY_COEF = 10
 ADDITIONAL_LATE_PENALTY = 1
 CAPACITY_USAGE_COEF = 0
+SUCCESS_BONUS = 100.0
 
 # PEND_COST = 2
 PEND_GROWTH = None
@@ -50,7 +51,7 @@ HEAD_COUNT = 8
 FF_SIZE = 512
 TANH_XPLOR = 10
 
-EPOCH_COUNT = 50
+EPOCH_COUNT = 100
 ITER_COUNT = 100
 MINIBATCH_SIZE = 128
 BASE_LR = 0.0001
@@ -136,6 +137,8 @@ def parse_args(argv = None):
                       help="Additional penalty for late deliveries")
     group.add_argument("--capacity-usage-coef", type=float, default=CAPACITY_USAGE_COEF,
                       help="Coefficient for capacity usage penalty")
+    group.add_argument("--success-bonus", type=float, default=SUCCESS_BONUS,
+                   help="پاداش زمانی که تمام نودهای feasible بدون دیرکرد به موقع تحویل شوند")
 
     group = parser.add_argument_group("Model parameters")
     group.add_argument("--model-size", "-s", type = int, default = MODEL_SIZE)

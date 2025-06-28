@@ -74,8 +74,8 @@ class PVRP_Environment:
     CUST_FEAT_SIZE = 4  # x,y, demand(1), spoilage_time
 
     def __init__(self, data, nodes=None, cust_mask=None,
-                spoilage_penalty=0.05, unserved_penalty=0.5,pickup_bonus_coef=0.05,
-                additional_late_penalty=1, capacity_usage_coef=0.0,dist_penalty_coef=0.05,idle_penalty_coef =10, logger=None):
+                spoilage_penalty=1, unserved_penalty=0.8,pickup_bonus_coef=0.05,
+                additional_late_penalty=1, capacity_usage_coef=0.0,dist_penalty_coef=0.05,idle_penalty_coef =10,success_bonus=100, logger=None):
         self.veh_count = data.veh_count
         self.veh_capa = data.veh_capa
         self.veh_speed = data.veh_speed
@@ -91,7 +91,8 @@ class PVRP_Environment:
         self.capacity_usage_coef = capacity_usage_coef
         # self.early_reward = early_reward
         self.idle_penalty_coef = idle_penalty_coef
-        self.last_reward = torch.zeros((self.minibatch_size, 1), device=self.nodes.device) 
+        self.last_reward = torch.zeros((self.minibatch_size, 1), device=self.nodes.device)
+        self.success_bonus = success_bonus 
        
         
         # Initialize logger
@@ -499,6 +500,14 @@ class PVRP_Environment:
             J_depot  = - self.additional_late_penalty * late_at_depot_cnt
             J_unserv = - self.unserved_penalty       * unserved_cnt
 
+
+            idle_penalty = torch.zeros_like(node_late_cnt)
+            for b in range(self.minibatch_size):
+                unused = (self.vehicle_visit_count[b] == 0).sum()
+                idle_penalty[b, 0] = - self.idle_penalty_coef * unused
+
+            reward += idle_penalty
+
             # -------- 4-E) shaping کل مسافت --------
             total_dist = 0.0
             for v in range(self.veh_count):
@@ -515,7 +524,14 @@ class PVRP_Environment:
             # -------- 4-F) جمع نهایی و لاگ --------
             final_reward = J_node + J_depot + J_unserv + J_dist
             reward += final_reward
-
+            
+            
+            all_on_time = (feasible_mask & self.served & (~self.late_nodes))\
+                            .all(dim=1, keepdim=True)
+            success_bonus = self.success_bonus * all_on_time.float()
+            reward += success_bonus
+            
+            
             for b in range(self.minibatch_size):
                 self.logger.info(
                     f"[FINAL] B{b:03d} | "
@@ -523,6 +539,9 @@ class PVRP_Environment:
                     f"late_depot={late_at_depot_cnt[b,0]:.0f} | "
                     f"unserved={unserved_cnt[b,0]:.0f} | "
                     f"dist={total_dist:.1f} | "
+                    f"success={int(all_on_time[b,0].item())} | "   # <-- NEW
+                    f"idle={-idle_penalty[b,0]/self.idle_penalty_coef:.0f} | "
+                    f"bonus={success_bonus[b,0]:.1f} | "  
                     f"reward={reward[b,0]:.1f}"
                 )
 

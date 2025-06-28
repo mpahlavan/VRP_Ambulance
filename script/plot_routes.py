@@ -22,7 +22,7 @@ class PVRPAnalyzer:
         self.cust_loc_range = args.loc_range
         self.horizon = args.horizon
         self.spoilage_range = args.spoilage_range
-        date = "250621-1209"
+        date = "250626-1435"
         self.MODEL_PATH = f"./output/PVRPn{args.customers_count}m{args.vehicles_count}_{date}/chkpt_ep{args.epoch_count}.pyth"
         self.learner = self._load_model()
         
@@ -57,7 +57,7 @@ class PVRPAnalyzer:
         return data, ref_routes
 
     # MODIFIED: تابع محاسبه هزینه‌های مرجع با در نظر گرفتن پنالتی‌های پایان اپیزود
-    def calculate_reference_costs(self, data, ref_routes):
+    def calculate_reference_costs(self, data, ref_routes, args):
         """محاسبه هزینه‌های مسیرهای مرجع با در نظر گرفتن پنالتی‌های پایان اپیزود"""
         ref_costs = []
         
@@ -65,12 +65,32 @@ class PVRPAnalyzer:
         ref_unserved_total = 0
         ref_late_total = 0
         ref_served_total = 0
+
+        env_params = [
+            args.spoilage_penalty,         
+            args.unserved_penalty,
+            args.pickup_bonus_coef,        
+            args.additional_late_penalty,
+            args.capacity_usage_coef,
+            args.dist_penalty_coef,       
+            args.idle_penalty_coef,
+            args.success_bonus        
+         
+        ]
         
-        for batch_idx, routes in enumerate(ref_routes):
+        for batch_idx in range(data.nodes.size(0)):
+            single_data = PVRP_Dataset(
+                data.veh_count,
+                data.veh_capa,
+                data.veh_speed,
+                data.nodes[batch_idx:batch_idx+1].clone(),
+                None if data.cust_mask is None else data.cust_mask[batch_idx:batch_idx+1].clone()
+            )
+
+            # -------------- تغییر مهم ----------------
             single_env = PVRP_Environment(
-                data,
-                nodes=data.nodes[batch_idx:batch_idx+1],
-                cust_mask=data.cust_mask[batch_idx:batch_idx+1] if data.cust_mask is not None else None
+                single_data,
+                *env_params      # یا **env_kwargs
             )
             
             # MODIFIED: اضافه کردن ویژگی last_reward
@@ -239,7 +259,7 @@ class PVRPAnalyzer:
         
         # تولید داده‌ها و دریافت راه‌حل‌های مرجع
         data, ref_routes = self.generate_data()
-        ref_costs = self.calculate_reference_costs(data, ref_routes)
+        ref_costs = self.calculate_reference_costs(data, ref_routes, self.args)
         
         # MODIFIED: ایجاد متغیرهای آماری برای مدل یادگیری
         learned_costs = []
@@ -338,7 +358,8 @@ class PVRPAnalyzer:
             ref_env = PVRP_Environment(
                 data,
                 nodes=data.nodes[idx:idx+1],
-                cust_mask=data.cust_mask[idx:idx+1] if data.cust_mask is not None else None
+                cust_mask=data.cust_mask[idx:idx+1] if data.cust_mask is not None else None,
+                *env_params
             )
             if not hasattr(ref_env, 'last_reward'):
                 ref_env.last_reward = torch.zeros((ref_env.minibatch_size, 1), device=ref_env.nodes.device)
@@ -359,7 +380,8 @@ class PVRPAnalyzer:
                     data.veh_capa,
                     data.veh_speed,
                     data.nodes[idx:idx+1].clone(),
-                    None if data.cust_mask is None else data.cust_mask[idx:idx+1].clone()
+                    None if data.cust_mask is None else data.cust_mask[idx:idx+1].clone(),
+                    *env_params
                 )
             )
             if not hasattr(learned_env, 'last_reward'):
