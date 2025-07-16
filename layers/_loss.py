@@ -1,3 +1,4 @@
+
 import torch
 import torch.nn.functional as F
 
@@ -37,15 +38,32 @@ def reinforce_loss(logprobs, rewards, baseline = None, weights = None, discount 
         vals = []
         for r in reversed(rewards):
             cumul = r + discount * cumul
-            vals.append(cumul.squeeze(-1))
+            vals.append(cumul) 
         vals.reverse()
 
         loss = []
         bl_loss = []
         for val, logp, bl, w in zip(vals, logprobs, baseline, weights):
-            loss.append( -logp * (val - bl.detach()) * w )
+            #  اطمینان از سازگاری dimensions
+            # logp معمولاً [N, 1] است
+            # val حالا [N, 1] است 
+            # bl هم [N, 1] است
+            
+            # محاسبه policy loss
+            policy_loss = -logp * (val - bl.detach()) * w
+            loss.append(policy_loss)
+            
+            # محاسبه baseline loss با dimension matching
             if bl.requires_grad:
-                bl_loss.append( F.smooth_l1_loss(bl, val) )
+                # اطمینان از اینکه هر دو tensor همان shape دارند
+                if val.shape != bl.shape:
+                    if val.dim() == 1 and bl.dim() == 2:
+                        val = val.unsqueeze(-1)
+                    elif val.dim() == 2 and bl.dim() == 1:
+                        bl = bl.unsqueeze(-1)
+                
+                bl_loss.append(F.smooth_l1_loss(bl, val))
+                
         loss = torch.stack(loss).sum(dim = 0)
 
         if bl_loss:

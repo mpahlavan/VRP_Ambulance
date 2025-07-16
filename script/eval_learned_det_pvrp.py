@@ -17,7 +17,7 @@ def main(args):
     n = args.customers_count
     m = args.vehicles_count
     epoch = args.epoch_count
-    date = "250626-1435"
+    date = "250714-2017"
     out_pdf_dir = f"./results/{pb}_n{n}m{m}_{time.strftime('%y%m%d-%H%M')}/"
     os.makedirs(out_pdf_dir, exist_ok = True)
     data_path = f"./data/{pb}_n{n}m{m}/norm_data_spoil_{args.spoilage_range[0]}_{args.spoilage_range[1]}.pyth"

@@ -175,15 +175,14 @@ def main(args):
     #         "sdvrptw": SDVRPTW_Environment
     #         }.get(args.problem_type)
     env_params = [
-            args.spoilage_penalty,         
-            args.unserved_penalty,
-            args.pickup_bonus_coef,        
-            args.additional_late_penalty,
-            args.capacity_usage_coef,
-            args.dist_penalty_coef,       
-            args.idle_penalty_coef,
-            args.success_bonus        
-        ]
+    args.spoilage_penalty,  
+    args.unserved_penalty,  
+    args.dist_penalty_coef,  
+    args.pickup_bonus_coef,  
+    args.additional_late_penalty,  
+    args.capacity_usage_coef,
+    args.idle_penalty_coef  
+]
     # if args.problem_type != "vrp":
     #     env_params.append(args.late_cost)
     #     if args.problem_type != "vrptw":
