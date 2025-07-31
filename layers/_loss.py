@@ -44,10 +44,7 @@ def reinforce_loss(logprobs, rewards, baseline = None, weights = None, discount 
         loss = []
         bl_loss = []
         for val, logp, bl, w in zip(vals, logprobs, baseline, weights):
-            #  اطمینان از سازگاری dimensions
-            # logp معمولاً [N, 1] است
-            # val حالا [N, 1] است 
-            # bl هم [N, 1] است
+            
             
             # محاسبه policy loss
             policy_loss = -logp * (val - bl.detach()) * w

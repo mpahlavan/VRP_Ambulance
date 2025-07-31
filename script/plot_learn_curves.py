@@ -40,7 +40,7 @@ def main(args):
     ax = fig.add_subplot(grid[:,:3])
 #    ax.fill_between(results.ep, -results.test_mu - results.test_std,
 #            -results.test_mu + results.test_std, color='g', alpha=0.5)
-    ax.axvline(15, color='k', linestyle=':')
+    # ax.axvline(15, color='k', linestyle=':')
     ax.plot(results.ep, results.val, label="observed on train data", color='r')
     ax.plot(results.ep, results.bl, label="estimated by critic on train data", color='b')
     ax.plot(results.ep, -results.test_mu, label="observed on test data", color='g')
@@ -49,21 +49,21 @@ def main(args):
     ax.set_xlabel("Training epoch")
 
     ax = fig.add_subplot(grid[0, 3])
-    ax.axvline(15, color='k', linestyle=':')
+    # ax.axvline(15, color='k', linestyle=':')
     ax.plot(results.ep, results.prob)
     ax.yaxis.tick_right()
     ax.yaxis.set_label_position("right")
     ax.set_ylabel("Routes prob.")
 
     ax = fig.add_subplot(grid[1, 3])
-    ax.axvline(15, color='k', linestyle=':')
+    # ax.axvline(15, color='k', linestyle=':')
     ax.plot(results.ep, results.loss)
     ax.yaxis.tick_right()
     ax.yaxis.set_label_position("right")
     ax.set_ylabel("AC loss")
 
     ax = fig.add_subplot(grid[2, 3])
-    ax.axvline(15, color='k', linestyle=':')
+    # ax.axvline(15, color='k', linestyle=':')
     ax.plot(results.ep, results.norm)
     ax.yaxis.tick_right()
     ax.yaxis.set_label_position("right")

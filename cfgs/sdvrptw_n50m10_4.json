@@ -1,0 +1,11 @@
+{
+    "rng_seed": 666844739,
+    "problem_type": "sdvrptw",
+    "customers_count": 50,
+    "vehicles_count": 10,
+    "epoch_count": 20,
+    "iter_count": 2500,
+    "baseline_type": "critic",
+    "plot_period": 20,
+    "plot_select": "best"
+}

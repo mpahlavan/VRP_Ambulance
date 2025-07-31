@@ -606,18 +606,24 @@ class PVRP_Environment:
             # success_bonus_80 = self.success_bonus * (success_ratio >= 0.8).float()
             # reward += success_bonus_80
             
-            # لاگ
-            if hasattr(self, 'debug_mode') and self.debug_mode:
+            if self.logger:  # فقط وجود logger را چک کن
                 for b in range(self.minibatch_size):
+                    # محاسبه آمار تکمیلی
+                    total_feasible = feasible_non_depot[b].sum().item()
+                    total_served = self.served[b, 1:].sum().item()  # حذف depot از شمارش
+                    serving_rate = (total_served / total_feasible * 100) if total_feasible > 0 else 0
+                    
+                    # لاگ کامل reward breakdown
                     self.logger.info(
-                        f"[SIMPLE] B{b:03d} | "
-                        f"pickup_late={pickup_late_cnt[b,0]:.0f} | "
-                        f"depot_late={late_at_depot_cnt[b,0]:.0f} | "
-                        f"unserved={unserved_cnt[b,0]:.0f} | "
-                        f"idle={idle_cnt[b,0]:.0f} | "
-                        f"reward={reward[b,0]:.1f}"
+                        f"[EPISODE_END] B{b:03d} | "
+                        f"Served={total_served}/{total_feasible} ({serving_rate:.1f}%) | "
+                        f"PickupLate={pickup_late_cnt[b,0]:.0f} | "
+                        f"DepotLate={late_at_depot_cnt[b,0]:.0f} | "
+                        f"Unserved={unserved_cnt[b,0]:.0f} | "
+                        f"Idle={idle_cnt[b,0]:.0f} | "
+                        f"Rewards: Depot={J_depot[b,0]:.1f} Unserv={J_unserv[b,0]:.1f} Idle={J_idle[b,0]:.1f} | "
+                        f"FinalReward={reward[b,0]:.1f}"
                     )
-
             self.last_reward = reward.clone()
 
         if reward.dim()==1:

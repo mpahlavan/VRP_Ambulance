@@ -40,7 +40,9 @@ def train_epoch(args, data, Environment, env_params, bl_wrapped_learner, optim, 
             loss = reinforce_loss(logps, rewards, bl_vals)
 
             prob = torch.stack(logps).sum(0).exp().mean()
-            val = torch.stack(rewards).sum(0).mean()
+            # val = torch.stack(rewards).sum(0).mean()
+            #use_cumul_reward=True کردم و این رو برای اصلاح خطا اعمال کردم
+            val = rewards.mean() if isinstance(rewards, torch.Tensor) else torch.stack(rewards).sum(0).mean()
             bl = bl_vals[0].mean()
 
             optim.zero_grad()

@@ -14,7 +14,7 @@ from marpdan.dep import matplotlib as mpl, pyplot as plt
 # ---------------- global style ----------------
 mpl.rcParams["axes.titlesize"] = 20
 SEED       = 12348877555
-BATCH_SIZE =1600
+BATCH_SIZE =800
 
 
 # ======================================================================
@@ -140,7 +140,7 @@ class PVRPAnalyzer:
         ]
 
         # load model
-        date = "250714-1003"   # adjust to your folder
+        date = "250729-1512"   # adjust to your folder
         self.model_pth = (
             f"./output/PVRPn{self.nC}m{self.nV}_{date}/"
             f"chkpt_ep{self.epoch_num}.pyth"

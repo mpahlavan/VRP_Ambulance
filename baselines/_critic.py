@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F # Added for ReLU activation
 
 class CriticBaseline(Baseline):
-    def __init__(self, learner, cust_count, use_qval=True, use_cumul_reward=False, hidden_size=128, num_layers=2):
+    def __init__(self, learner, cust_count, use_qval=True, use_cumul_reward=True, hidden_size=128, num_layers=2):
         """
         Initializes the CriticBaseline.
 
