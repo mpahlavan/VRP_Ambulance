@@ -173,6 +173,9 @@ def parse_args(argv = None):
     group.add_argument("--output-dir", "-o", type = str, default = OUTPUT_DIR)
     group.add_argument("--checkpoint-period", "-c", type = int, default = CHECKPOINT_PERIOD)
     group.add_argument("--resume-state", type = str, default = RESUME_STATE)
+
+
+    
     
     # Logging parameters
     group = parser.add_argument_group("Logging parameters")

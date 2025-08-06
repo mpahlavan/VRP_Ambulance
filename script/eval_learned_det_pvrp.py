@@ -43,7 +43,7 @@ def main(args):
         with torch.no_grad():
 
             # GREEDY
-            learner.greedy = False
+            learner.greedy = True
             costs = []
             logps = []
             for batch in tqdm(loader, desc="Evaluating Greedy"):
@@ -60,7 +60,7 @@ def main(args):
             torch.save(costs, out_pdf_dir + "mardan_greedy.pyth")
 
             # SAMPLING
-            learner.greedy = True
+            learner.greedy = False
             loader = DataLoader(data, batch_size=512)
             costs = []
             logps = []

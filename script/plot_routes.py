@@ -103,7 +103,7 @@ def plot_instance(ax, nodes, routes, title="",
     # اضافه کردن annotation برای spoilage times
     for i in range(1, len(nodes)):
         spoilage = nodes[i, 3].item()
-        ax.annotate(f"{spoilage:.2f}", (nodes[i, 0].item(), nodes[i, 1].item()), 
+        ax.annotate(f"{spoilage:.2f}", (nodes[i, 0].item(), nodes[i, 1].item()),
                    xytext=(5, 5), textcoords='offset points', fontsize=8)
 
     ax.set_title(title)
@@ -209,7 +209,7 @@ class PVRPAnalyzer:
         استخراج مسیرها از actions مدل یادگیری به شکل مشابه کد اولیه
         """
         learned_routes = [[] for _ in range(self.nV)]
-        
+
         for action in actions:
             if isinstance(action, tuple) and len(action) == 2:
                 veh_idx, node_idx = action
@@ -224,7 +224,7 @@ class PVRPAnalyzer:
                     # باید vehicle index را از محیط دریافت کنیم
                     # این بخش ممکن است نیاز به تطبیق با ساختار دقیق actions داشته باشد
                     learned_routes[0].append(n)
-        
+
         # حذف مسیرهای خالی
         learned_routes = [route for route in learned_routes if route]
         return learned_routes
@@ -238,7 +238,7 @@ class PVRPAnalyzer:
         learned_costs = []
         learned_routes_cache = []   # ذخیره مسیرهای یادگیری شده برای plotting
         env_cache = []   # keep envs for later plotting
-        
+
         for b in range(BATCH_SIZE):
             sd  = PVRP_Dataset(
                 data.veh_count, data.veh_capa, data.veh_speed,
@@ -247,21 +247,21 @@ class PVRPAnalyzer:
             )
             env = PVRP_Environment(sd, None, None, *self.env_params)
             env.reset()
-            
+
             with torch.no_grad():
                 learned_actions, _, rs = self.learner(env)
-            
+
             if not env.done:
                 rs.append(env.step(torch.tensor([[0]], dtype=torch.long)))
-            
+
             learned_costs.append(-torch.stack(rs).sum())
-            
+
             # استخراج مسیرهای یادگیری شده
             learned_routes = self.extract_routes_from_actions(learned_actions)
             learned_routes_cache.append(learned_routes)
-            
+
             env_cache.append(env)   # store for plotting
-            
+
         learned_costs = torch.stack(learned_costs)
 
         gaps = learned_costs / ref_costs - 1
@@ -305,7 +305,7 @@ class PVRPAnalyzer:
                     ref_env.step(torch.tensor([[node]], dtype=torch.long))
             if not ref_env.done:
                 ref_env.step(torch.tensor([[0]], dtype=torch.long))
-            
+
             late_ref, late_dep_ref = compute_late_sets(ref_env)
             late_lea, late_dep_lea = compute_late_sets(env_learned)
 
@@ -313,22 +313,22 @@ class PVRPAnalyzer:
             ref_served = set([node for route in ref_rt for node in route])
             learned_served = set([node for route in learned_rt for node in route])
             all_nodes = set(range(1, len(cust)))  # به جز دپو (0)
-            
+
             ref_unserved = all_nodes - ref_served
             learned_unserved = all_nodes - learned_served
 
             # plot
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
-            
+
             # عناوین با اطلاعات اضافی
             ref_title = (f"ORTools (cost={ref_costs[idx]:.1f})\n"
                         f"Served: {len(ref_served)}, Late: {len(late_ref)}, "
                         f"Late at depot: {len(late_dep_ref)}, Unserved: {len(ref_unserved)}")
-            
+
             learned_title = (f"Learned (cost={learned_costs[idx]:.1f}, gap={gap:+.0%})\n"
                            f"Served: {len(learned_served)}, Late: {len(late_lea)}, "
                            f"Late at depot: {len(late_dep_lea)}, Unserved: {len(learned_unserved)}")
-            
+
             plot_instance(ax1, cust, ref_rt,
                           title=ref_title,
                           late_nodes=late_ref, late_depot_nodes=late_dep_ref)
@@ -338,11 +338,11 @@ class PVRPAnalyzer:
 
             # اضافه کردن گره‌های خدمت داده نشده به عنوان علامت‌های 'X'
             for node in ref_unserved:
-                ax1.plot(cust[node, 0].item(), cust[node, 1].item(), 'rx', markersize=10, 
+                ax1.plot(cust[node, 0].item(), cust[node, 1].item(), 'rx', markersize=10,
                         label="Unserved" if node == min(ref_unserved) else "")
-            
+
             for node in learned_unserved:
-                ax2.plot(cust[node, 0].item(), cust[node, 1].item(), 'rx', markersize=10, 
+                ax2.plot(cust[node, 0].item(), cust[node, 1].item(), 'rx', markersize=10,
                         label="Unserved" if node == min(learned_unserved) else "")
 
             fig.tight_layout()
