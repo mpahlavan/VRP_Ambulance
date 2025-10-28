@@ -109,40 +109,11 @@ def main(args):
             args.horizon,
             args.spoilage_range
             )
-    # gen_params = [
-    #         args.customers_count,
-    #         args.vehicles_count,
-    #         args.veh_capa,
-    #         args.veh_speed,
-    #         args.min_cust_count,
-    #         args.loc_range,
-    #         args.dem_range
-    #         ]
-    # if args.problem_type != "vrp":
-    #     gen_params.extend( [args.horizon, args.dur_range, args.tw_ratio, args.tw_range] )
-    # if args.problem_type == "sdvrptw":
-    #     gen_params.extend( [args.deg_of_dyna, args.appear_early_ratio] )
-
-    # # TRAIN DATA
-    # verbose_print("Generating {} {} samples of training data...".format(
-    #     args.iter_count * args.batch_size, args.problem_type.upper()),
-    #     end = " ", flush = True)
-    # train_data = Dataset.generate(
-    #         args.iter_count * args.batch_size,
-    #         *gen_params
-    #         )
+    
     train_data.normalize()
     verbose_print("Done.")
 
-    # TEST DATA AND COST REFERENCE
-    # verbose_print("Generating {} {} samples of test data...".format(
-    #     args.test_batch_size, args.problem_type.upper()),
-    #     end = " ", flush = True)
-    # test_data = Dataset.generate(
-    #         args.test_batch_size,
-    #         *gen_params
-    #         )
-    # verbose_print("Done.")
+    
     verbose_print("Generating {} PVRP samples of test data...".format(
         args.test_batch_size),
         end = " ", flush = True)
@@ -170,12 +141,7 @@ def main(args):
 
     # ENVIRONMENT
     Environment = PVRP_Environment 
-    # Environment = {
-    #         "vrp": VRP_Environment,
-    #         "vrptw": VRPTW_Environment,
-    #         "svrptw": SVRPTW_Environment,
-    #         "sdvrptw": SDVRPTW_Environment
-    #         }.get(args.problem_type)
+    
     env_params = [
     args.spoilage_penalty,  
     args.unserved_penalty,  
@@ -185,10 +151,7 @@ def main(args):
     args.capacity_usage_coef,
     args.idle_penalty_coef  
 ]
-    # if args.problem_type != "vrp":
-    #     env_params.append(args.late_cost)
-    #     if args.problem_type != "vrptw":
-    #         env_params.extend( [args.speed_var, args.late_prob, args.slow_down, args.late_var] )
+    
     test_env = Environment(test_data, None, None, *env_params)
 
     if ref_routes is not None:

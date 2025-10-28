@@ -17,7 +17,7 @@ def main(args):
     n = args.customers_count
     m = args.vehicles_count
     epoch = args.epoch_count
-    date = "250729-1512"
+    date = "251008-1229"
     out_pdf_dir = f"./results/{pb}_n{n}m{m}_{time.strftime('%y%m%d-%H%M')}/"
     os.makedirs(out_pdf_dir, exist_ok = True)
     data_path = f"./data/{pb}_n{n}m{m}/norm_data_spoil_{args.spoilage_range[0]}_{args.spoilage_range[1]}.pyth"
@@ -28,7 +28,7 @@ def main(args):
 
     try:
         data = torch.load(data_path)
-        loader = DataLoader(data, batch_size=512)
+        loader = DataLoader(data, batch_size=32)
 
         # Initialize learner with PVRP feature sizes
         learner = AttentionLearner(
@@ -61,7 +61,7 @@ def main(args):
 
             # SAMPLING
             learner.greedy = False
-            loader = DataLoader(data, batch_size=512)
+            loader = DataLoader(data, batch_size=32)
             costs = []
             logps = []
             for batch in tqdm(loader, desc="Evaluating Sampling"):

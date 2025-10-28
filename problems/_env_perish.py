@@ -410,93 +410,6 @@ class PVRP_Environment:
         self.batch_costs = torch.zeros(self.minibatch_size)
         self.batch_served = torch.zeros(self.minibatch_size, dtype=torch.long)
         
-        # # Add separator in log
-        # self.logger.log_separator()
-        
-        # # Log initial mask
-        # for b in range(self.minibatch_size):
-        #     for v in range(self.veh_count):
-        #         visible_nodes = (~self.mask[b, v]).nonzero().flatten().tolist()
-        #         if visible_nodes:
-        #             visible_nodes_str = ", ".join(f"{n}" for n in visible_nodes if n > 0)
-        #             if visible_nodes_str:  # Only log if there are visible nodes (excluding depot)
-        #                 self.logger.info(f"| MASK | B{b:03d} | V{v} sees nodes: [{visible_nodes_str}]")
-
-    
-    # def step(self, cust_idx):
-    #     """
-    #     Reward system متعادل: تشویق serving + جریمه late deliveries
-    #     """
-    #     # ... (همان کد قبلی تا اینجا)
-        
-    #     # 3) Immediate reward: تشویق serving nodes
-    #     is_customer = (cust_idx > 0).float()
-    #     reward = is_customer  # +1 برای serve کردن هر node
-        
-    #     # 4) در پایان episode
-    #     if self.done:
-    #         # محاسبه آمار
-    #         feasible_mask = ~self.infeasible_nodes
-    #         feasible_mask[:,0] = False
-            
-    #         total_feasible = feasible_mask.sum(dim=1, keepdim=True).float()
-    #         served_count = self.served[:, 1:].sum(dim=1, keepdim=True).float()
-            
-    #         # Late deliveries (pickup + depot)
-    #         pickup_late = (self.late_nodes & feasible_mask).sum(dim=1, keepdim=True).float()
-    #         depot_late = self._calculate_depot_late()  # helper method
-    #         total_late = pickup_late + depot_late
-            
-    #         # Final reward calculation
-    #         # Approach 1: Serving ratio - Late ratio
-    #         serving_ratio = served_count / (total_feasible + 1e-8)  # 0 to 1
-    #         late_ratio = total_late / (served_count + 1e-8)  # 0 to inf
-            
-    #         final_reward = serving_ratio - late_ratio
-            
-    #         # یا Approach 2: On-time delivery count
-    #         # on_time_deliveries = served_count - total_late
-    #         # final_reward = on_time_deliveries
-            
-    #         reward = final_reward
-            
-    #         # Logging
-    #         for b in range(self.minibatch_size):
-    #             self.logger.info(
-    #                 f"[BALANCED] B{b:03d} | "
-    #                 f"feasible={total_feasible[b,0]:.0f} | "
-    #                 f"served={served_count[b,0]:.0f} | "
-    #                 f"late={total_late[b,0]:.0f} | "
-    #                 f"on_time={served_count[b,0] - total_late[b,0]:.0f} | "
-    #                 f"reward={reward[b,0]:.2f}"
-    #             )
-
-    #     return reward
-
-
-
-
-    # def _calculate_depot_late(self):
-    #     """Helper: محاسبه late deliveries در depot"""
-    #     depot_late_count = torch.zeros((self.minibatch_size, 1), device=self.nodes.device)
-    #     arrival_times = self.vehicles[:, :, 3]
-        
-    #     for b in range(self.minibatch_size):
-    #         for v in range(self.veh_count):
-    #             nodes_v = torch.nonzero(
-    #                 (self.vehicle_routes[b] == v) &
-    #                 (torch.arange(self.nodes_count, device=self.nodes.device) > 0),
-    #                 as_tuple=False
-    #             ).squeeze(-1)
-                
-    #             if nodes_v.numel() > 0:
-    #                 depot_arrival = arrival_times[b, v]
-    #                 spoilage_times = self.nodes[b, nodes_v, 3]
-    #                 late_count = (depot_arrival > spoilage_times).sum()
-    #                 depot_late_count[b, 0] += late_count
-        
-    #     return depot_late_count
-
         
     def step(self, cust_idx):
         # 1) ظرفیت‌‌سنجی
@@ -567,18 +480,7 @@ class PVRP_Environment:
             idle_cnt = (self.vehicle_visit_count==0).sum(dim=1, keepdim=True)  # [B,1]
             idle_penalty = -self.idle_penalty_coef * idle_cnt
 
-            # E) مسافت کل (برای سادگی همین نسخه‌ی جمعِ همه‌ی بچ‌ها)
-            # total_dist = 0.0
-            # for b in range(self.minibatch_size):
-            #     for v in range(self.veh_count):
-            #         ns = torch.nonzero((self.vehicle_routes[b]==v)
-            #                             & (torch.arange(self.nodes_count, device=self.nodes.device)>0),
-            #                             as_tuple=False).squeeze(-1).tolist()
-            #         if ns:
-            #             route = [0]+ns+[0]
-            #             pos = self.nodes[b, route, :2]
-            #             total_dist += (pos[1:]-pos[:-1]).norm(dim=1).sum()
-
+            
             # J_node   = -self.additional_late_penalty * node_late_cnt
             J_depot  = -self.additional_late_penalty * late_at_depot_cnt
             J_unserv = -self.unserved_penalty       * unserved_cnt
@@ -673,3 +575,47 @@ class PVRP_Environment:
             self.cur_veh_idx[:, :, None].expand(-1, -1, self.VEH_STATE_SIZE))
         self.cur_veh_mask = self.mask.gather(1,
             self.cur_veh_idx[:, :, None].expand(-1, -1, self.nodes_count))
+
+    def call_ortools(data):
+        routes = ort_solve(data)
+        # حالا هزینه‌ها و پنالتی‌ها را حساب می‌کنیم
+
+        costs = []
+        penalties = []
+        for b_idx, nodes in enumerate(data.nodes_gen()):
+            route_set = routes[b_idx]
+            if not route_set:
+                costs.append(1e8)
+                penalties.append(0)
+                continue
+
+            total_cost = 0
+            penalty = 0
+            depot = nodes[0, :2]
+            veh_speed = data.veh_speed
+
+            for route in route_set:
+                if not route:
+                    # ماشین بیکار → جریمه Idle
+                    penalty += 10 * 20  # α₅ * scale = 200
+                    continue
+
+                pos = depot
+                time = 0
+                for n in route:
+                    next_pos = nodes[n, :2]
+                    dist = (next_pos - pos).pow(2).sum().sqrt()
+                    time += dist / veh_speed
+                    total_cost += 0.05 * dist.item()
+
+                    # بررسی زنده‌ماندن بیمار (late penalty)
+                    survival = nodes[n, 3].item()
+                    delivery_time = time + (depot - next_pos).pow(2).sum().sqrt() / veh_speed
+                    if delivery_time > survival:
+                        penalty += (delivery_time - survival) * 1.0  # α₃
+                    pos = next_pos
+
+            costs.append(total_cost)
+            penalties.append(penalty)
+
+        return routes, costs, penalties
