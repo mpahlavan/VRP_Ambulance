@@ -1,7 +1,7 @@
 import torch
 
 class Baseline:
-    def __init__(self, learner, use_cumul_reward = False):
+    def __init__(self, learner, use_cumul_reward = True):
         self.learner = learner
         self.use_cumul = use_cumul_reward
 

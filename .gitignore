@@ -5,4 +5,4 @@ results/
 pretrained/
 *.pdf
 *.pyth
-logs/
+logs/PlotNeuralNet/

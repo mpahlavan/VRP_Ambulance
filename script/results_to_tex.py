@@ -40,9 +40,9 @@ def parse_args():
     parser.add_argument("--problem-sizes", nargs='+', type=int, 
                        default=[10, 20, 50], help="Problem sizes to analyze")
     # Manual date specification for OR-Tools and learned results
-    parser.add_argument("--ortools-date", type=str, default="250727-2125",
+    parser.add_argument("--ortools-date", type=str, default="260104-2014",
                        help="Date folder for OR-Tools results")
-    parser.add_argument("--learned-date", type=str, default="250727-2126", 
+    parser.add_argument("--learned-date", type=str, default="260104-2027", 
                        help="Date folder for learned model results")
     return parser.parse_args()
 

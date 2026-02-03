@@ -49,30 +49,39 @@ MODEL_SIZE = 128
 LAYER_COUNT = 3
 HEAD_COUNT = 8
 FF_SIZE = 512
-TANH_XPLOR = 11
+TANH_XPLOR = 10.9
 
-EPOCH_COUNT = 1000
+EPOCH_COUNT = 500
 ITER_COUNT = 100
 MINIBATCH_SIZE = 32
-BASE_LR = 0.00005
+BASE_LR = 0.000066
 LR_DECAY = None
 MAX_GRAD_NORM = 2
 GRAD_NORM_DECAY = None
 LOSS_USE_CUMUL = True
+ENTROPY_COEF = 0.01
+
 
 BASELINE = "critic"
 ROLLOUT_COUNT = 3
 ROLLOUT_THRESHOLD = 0.05
 CRITIC_USE_QVAL = False
-CRITIC_LR = 0.0001
+CRITIC_LR = 0.000124
 CRITIC_DECAY = None
 CRITIC_HIDDEN_SIZE = 128 
 CRITIC_NUM_LAYERS = 2
+
+SURVIVAL_ALPHA = 0.5
+SURVIVAL_MODE = "static"
 
 TEST_BATCH_SIZE = 800
 OUTPUT_DIR = None
 RESUME_STATE = None
 CHECKPOINT_PERIOD = 5
+
+N_WORKERS = 8
+EXPLOIT_INTERVAL = 10
+MINI_EPOCHS = 10
 
 
 def write_config_file(args, output_file):
@@ -138,7 +147,7 @@ def parse_args(argv = None):
     group.add_argument("--capacity-usage-coef", type=float, default=CAPACITY_USAGE_COEF,
                       help="Coefficient for capacity usage penalty")
     group.add_argument("--success-bonus", type=float, default=SUCCESS_BONUS,
-                   help="پاداش زمانی که تمام نودهای feasible بدون دیرکرد به موقع تحویل شوند")
+                   help="success-bonus for delivering all patient ontime")
 
     group = parser.add_argument_group("Model parameters")
     group.add_argument("--model-size", "-s", type = int, default = MODEL_SIZE)
@@ -156,6 +165,8 @@ def parse_args(argv = None):
     group.add_argument("--max-grad-norm", type = float, default = MAX_GRAD_NORM)
     group.add_argument("--grad-norm-decay", type = float, default = GRAD_NORM_DECAY)
     group.add_argument("--loss-use-cumul", action = "store_true", default = LOSS_USE_CUMUL)
+    group.add_argument("--entropy-coef", type = float, default = ENTROPY_COEF,
+            help = "Entropy regularization coefficient (encourages exploration)")
 
     group = parser.add_argument_group("Baselines parameters")
     group.add_argument("--baseline-type", type = str,
@@ -165,6 +176,12 @@ def parse_args(argv = None):
     group.add_argument("--critic-use-qval", action = "store_true", default = CRITIC_USE_QVAL)
     group.add_argument("--critic-rate", type = float, default = CRITIC_LR)
     group.add_argument("--critic-decay", type = float, default = CRITIC_DECAY)
+
+    group.add_argument("--survival-alpha", type = float, default = SURVIVAL_ALPHA,
+            help = "Weight for distance vs urgency in hybrid baseline (0=pure urgency, 1=pure distance)")
+    group.add_argument("--survival-mode", type = str, 
+            choices = ["static", "dynamic"], default = SURVIVAL_MODE,
+            help = "Static or dynamic alpha adaptation in hybrid baseline")
 
     group = parser.add_argument_group("Testing parameters")
     group.add_argument("--test-batch-size", type = int, default = TEST_BATCH_SIZE)
@@ -179,11 +196,21 @@ def parse_args(argv = None):
     
     # Logging parameters
     group = parser.add_argument_group("Logging parameters")
+
+
+
     group.add_argument("--log-dir", type = str, default = None,
                      help="Directory for detailed environment logs")
     group.add_argument("--log-level", type = str, default = "INFO",
                      choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                      help="Logging level")
+    
+    group.add_argument("--n-workers", type=int, default=N_WORKERS,
+                     help="Population size for PBT")
+    group.add_argument("--exploit-interval", type=int, default=EXPLOIT_INTERVAL,
+                     help="Evolution interval (epochs between exploit/explore)")
+    group.add_argument("--mini-epochs", type=int, default=MINI_EPOCHS,
+                     help="Mini epochs per evolution step")
 
     args = parser.parse_args(argv)
     if args.config_file is not None:

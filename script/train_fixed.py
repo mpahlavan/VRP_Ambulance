@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# train.py - FIXED VERSION with fresh data generation
+# Changes:
+# 1. Generate fresh training data every epoch (on-policy requirement)
+# 2. Optionally refresh test data periodically
 
 from marpdan import *
 from marpdan.problems import PVRP_Dataset, PVRP_Environment
@@ -37,11 +41,12 @@ def train_epoch(args, data, Environment, env_params, bl_wrapped_learner, optim, 
 
             dyna = Environment(data, custs, mask, *env_params)
             actions, logps, rewards, bl_vals = bl_wrapped_learner(dyna)
-            loss = reinforce_loss(logps, rewards, bl_vals)
+
+            # Add entropy regularization to encourage exploration
+            entropy_coef = getattr(args, 'entropy_coef', 0.0)
+            loss = reinforce_loss(logps, rewards, bl_vals, entropy_coef=entropy_coef)
 
             prob = torch.stack(logps).sum(0).exp().mean()
-            # val = torch.stack(rewards).sum(0).mean()
-            #use_cumul_reward=True کردم و این رو برای اصلاح خطا اعمال کردم
             val = rewards.mean() if isinstance(rewards, torch.Tensor) else torch.stack(rewards).sum(0).mean()
             bl = bl_vals[0].mean()
 
@@ -66,15 +71,21 @@ def train_epoch(args, data, Environment, env_params, bl_wrapped_learner, optim, 
 
 def test_epoch(args, test_env, learner, ref_costs):
     learner.eval()
-    if args.problem_type[0] == "s":
-        costs = test_env.nodes.new_zeros(test_env.minibatch_size)
-        for _ in range(100):
-            _, _, rewards = learner(test_env)
-            costs -= torch.stack(rewards).sum(0).squeeze(-1)
-        costs = costs / 100
-    else:
-        _, _, rs = learner(test_env)
-        costs = -torch.stack(rs).sum(dim = 0).squeeze(-1)
+    learner.greedy = True  # Use greedy/deterministic sampling for consistent evaluation
+
+    with torch.no_grad():  # Disable gradient computation for efficiency
+        if args.problem_type[0] == "s":
+            costs = test_env.nodes.new_zeros(test_env.minibatch_size)
+            for _ in range(100):
+                _, _, rewards = learner(test_env)
+                costs -= torch.stack(rewards).sum(0).squeeze(-1)
+            costs = costs / 100
+        else:
+            _, _, rs = learner(test_env)
+            costs = -torch.stack(rs).sum(dim = 0).squeeze(-1)
+
+    learner.greedy = False  # Reset to stochastic for training
+
     mean = costs.mean()
     std = costs.std()
     gap = (costs.to(ref_costs.device) / ref_costs - 1).mean()
@@ -95,41 +106,27 @@ def main(args):
 
     # PROBLEM
     Dataset = PVRP_Dataset
-    verbose_print("Generating {} PVRP samples of training data...".format(
-        args.iter_count * args.batch_size),
-        end = " ", flush = True)
-    train_data = Dataset.generate(
-            args.iter_count * args.batch_size,
-            args.customers_count,
-            args.vehicles_count,
-            args.veh_capa,
-            args.veh_speed,
-            args.min_cust_count,
-            args.loc_range,
-            args.horizon,
-            args.spoilage_range
-            )
     
-    train_data.normalize()
-    verbose_print("Done.")
-
-    
+    # ============================================================
+    # CRITICAL CHANGE: Test data generated once for consistency
+    # ============================================================
     verbose_print("Generating {} PVRP samples of test data...".format(
         args.test_batch_size),
         end = " ", flush = True)
     test_data = PVRP_Dataset.generate(
-        args.test_batch_size,               # batch_size
-        args.customers_count,               # cust_count
-        args.vehicles_count,                # veh_count
-        args.veh_capa,                      # veh_capa
-        args.veh_speed,                     # veh_speed
-        args.min_cust_count,                # min_cust_count
-        args.loc_range,                     # cust_loc_range
-        args.horizon,                       # horizon
-        args.spoilage_range                 # spoilage_range
+        args.test_batch_size,
+        args.customers_count,
+        args.vehicles_count,
+        args.veh_capa,
+        args.veh_speed,
+        args.min_cust_count,
+        args.loc_range,
+        args.horizon,
+        args.spoilage_range
     )
     verbose_print("Done.")
 
+    # Compute reference costs BEFORE normalization
     if ORTOOLS_ENABLED:
         ref_routes = ort_solve(test_data)
     elif LKH_ENABLED:
@@ -137,26 +134,29 @@ def main(args):
     else:
         ref_routes = None
         print("Warning! No external solver found to compute gaps for test.")
+    
+    # Now normalize test data
     test_data.normalize()
 
     # ENVIRONMENT
     Environment = PVRP_Environment 
     
     env_params = [
-    args.spoilage_penalty,  
-    args.unserved_penalty,  
-    args.dist_penalty_coef,  
-    args.pickup_bonus_coef,  
-    args.additional_late_penalty,  
-    args.capacity_usage_coef,
-    args.idle_penalty_coef  
-]
+        args.spoilage_penalty,  
+        args.unserved_penalty,  
+        args.dist_penalty_coef,  
+        args.pickup_bonus_coef,  
+        args.additional_late_penalty,  
+        args.capacity_usage_coef,
+        args.idle_penalty_coef  
+    ]
     
     test_env = Environment(test_data, None, None, *env_params)
 
     if ref_routes is not None:
         ref_costs = eval_apriori_routes(test_env, ref_routes, 100 if args.problem_type[0] == 's' else 1)
         print("Reference cost on test dataset {:5.2f} +- {:5.2f}".format(ref_costs.mean(), ref_costs.std()))
+    
     test_env.nodes = test_env.nodes.to(dev)
     if test_env.init_cust_mask is not None:
         test_env.init_cust_mask = test_env.init_cust_mask.to(dev)
@@ -189,7 +189,7 @@ def main(args):
         baseline = RolloutBaseline(learner, args.rollout_count, args.rollout_threshold)
     elif args.baseline_type == "critic":
         baseline = CriticBaseline(learner, args.customers_count, args.critic_use_qval, args.loss_use_cumul)
-    elif args.baseline_type == "hybrid": 
+    elif args.baseline_type == "hybrid":  
         baseline = SurvivalAwareBaseline(
             learner, 
             use_cumul_reward=args.loss_use_cumul,
@@ -199,8 +199,6 @@ def main(args):
         verbose_print(f"(alpha={args.survival_alpha}, mode={args.survival_mode}) ", end="")
     else:
         raise ValueError(f"Unknown baseline type: {args.baseline_type}")
-        
-    
     baseline.to(dev)
     verbose_print("Done.")
 
@@ -248,9 +246,34 @@ def main(args):
     test_stats = []
     try:
         for ep in range(start_ep, args.epoch_count):
-            train_stats.append( train_epoch(args, train_data, Environment, env_params, baseline, optim, dev, ep) )
+            # ============================================================
+            # CRITICAL CHANGE: Generate FRESH training data every epoch
+            # This is essential for on-policy RL (REINFORCE)
+            # ============================================================
+            verbose_print("Generating {} PVRP samples of training data (epoch {})...".format(
+                args.iter_count * args.batch_size, ep+1),
+                end=" ", flush=True)
+            
+            train_data = Dataset.generate(
+                args.iter_count * args.batch_size,
+                args.customers_count,
+                args.vehicles_count,
+                args.veh_capa,
+                args.veh_speed,
+                args.min_cust_count,
+                args.loc_range,
+                args.horizon,
+                args.spoilage_range
+            )
+            train_data.normalize()
+            verbose_print("Done.")
+            
+            # Train on fresh data
+            train_stats.append(train_epoch(args, train_data, Environment, env_params, baseline, optim, dev, ep))
+            
+            # Test evaluation
             if ref_routes is not None:
-                test_stats.append( test_epoch(args, test_env, learner, ref_costs) )
+                test_stats.append(test_epoch(args, test_env, learner, ref_costs))
 
             if args.rate_decay is not None:
                 lr_sched.step()

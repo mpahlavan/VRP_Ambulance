@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 mpl.rcParams["axes.titlesize"] = 20
 SEED = 12348877555
 ROLLOUTS = 800
-BATCH_SIZE = 100
+BATCH_SIZE = 800
 
 plt.style.use('seaborn-v0_8')
 mpl.rcParams.update({
@@ -31,18 +31,18 @@ mpl.rcParams.update({
 def compute_late_sets(env, batch_idx=0):
     """
     Extract late sets from environment state for a specific batch instance
-    
+
     Args:
         env: PVRP_Environment
         batch_idx: which instance in the batch to analyze
-    
+
     Returns:
         late_nodes: set of nodes with late pickup
         late_depot: set of nodes with late hospital arrival
     """
     if not hasattr(env, "vehicles"):
         return set(), set()
-    
+
     # Late pickup nodes
     late_nodes = set()
     if getattr(env, "late_nodes", None) is not None:
@@ -50,28 +50,101 @@ def compute_late_sets(env, batch_idx=0):
         late_indices = torch.nonzero(late_mask, as_tuple=False).flatten().tolist()
         late_nodes = set(late_indices)
         late_nodes.discard(0)  # Remove depot
-    
+
     # Late depot delivery
     late_depot = set()
     arrival_in_depot = env.vehicles[batch_idx, :, 3]  # Arrival times for batch_idx
     spoilage_times = env.nodes[batch_idx, :, 3]       # Survival times for batch_idx
-    
+
     for v in range(env.veh_count):
         # Get nodes served by vehicle v in batch_idx
         nodes_for_vehicle = torch.nonzero(
             env.vehicle_routes[batch_idx] == v, as_tuple=False
         ).flatten()
-        
+
         if nodes_for_vehicle.numel() == 0:
             continue
-            
+
         t_arrival_depot = arrival_in_depot[v].item()
-        
+
         for n in nodes_for_vehicle.tolist():
             if n > 0 and t_arrival_depot > spoilage_times[n]:  # Exclude depot
                 late_depot.add(n)
-    
+
     return late_nodes, late_depot
+
+
+def compute_late_sets_from_routes(nodes, routes, veh_speed):
+    """
+    Compute late sets by simulating routes directly.
+
+    This function correctly calculates delays for ANY set of routes (OR-Tools or learned)
+    by simulating the actual travel times and comparing against spoilage constraints.
+
+    Args:
+        nodes: Tensor of shape [num_nodes, 4] with (x, y, demand, spoilage_time)
+        routes: List of routes, each route is a list of node indices
+        veh_speed: Vehicle speed for travel time calculation
+
+    Returns:
+        late_pickup: set of nodes with late pickup (arrival > latest_pickup_time)
+        late_depot: set of nodes with late hospital delivery (depot_arrival > spoilage_time)
+    """
+    late_pickup = set()
+    late_depot = set()
+
+    depot_pos = nodes[0, :2]
+
+    for route in routes:
+        if not route:
+            continue
+
+        # Simulate vehicle traveling along the route
+        current_pos = depot_pos.clone()
+        current_time = 0.0
+
+        # Track nodes picked up on this trip (to check depot delivery time)
+        nodes_on_vehicle = []
+
+        for node_idx in route:
+            # Travel to node
+            node_pos = nodes[node_idx, :2]
+            dist = torch.norm(node_pos - current_pos).item()
+            travel_time = dist / veh_speed
+            arrival_time = current_time + travel_time
+
+            # Get spoilage time for this patient
+            spoilage_time = nodes[node_idx, 3].item()
+
+            # Calculate time needed to return to depot from this node
+            dist_to_depot = torch.norm(depot_pos - node_pos).item()
+            return_time = dist_to_depot / veh_speed
+
+            # Latest pickup time = spoilage_time - time_to_return_to_depot
+            # (Patient must reach hospital before spoilage)
+            latest_pickup_time = spoilage_time - return_time
+
+            # Check if pickup is late
+            if arrival_time > latest_pickup_time:
+                late_pickup.add(node_idx)
+
+            # Track this node for depot delivery check
+            nodes_on_vehicle.append((node_idx, spoilage_time))
+
+            # Update position and time
+            current_pos = node_pos
+            current_time = arrival_time
+
+        # After completing the route, vehicle returns to depot
+        dist_to_depot = torch.norm(depot_pos - current_pos).item()
+        depot_arrival_time = current_time + dist_to_depot / veh_speed
+
+        # Check if any patient on vehicle arrives at hospital late
+        for node_idx, spoilage_time in nodes_on_vehicle:
+            if depot_arrival_time > spoilage_time:
+                late_depot.add(node_idx)
+
+    return late_pickup, late_depot
 
 
 
@@ -89,7 +162,7 @@ class PVRPAnalyzer:
         self.cust_loc_range = args.loc_range
         self.horizon = args.horizon
         self.spoilage_range = args.spoilage_range
-        date = "250727-1714"
+        date = "260104-0727"
         self.MODEL_PATH = f"./output/PVRPn{args.customers_count}m{args.vehicles_count}_{date}/chkpt_ep{args.epoch_count}.pyth"
         self.learner = self._load_model()
         
@@ -527,12 +600,12 @@ class PVRPAnalyzer:
             learned_routes = [route for route in learned_routes if route]
             
             late_lea, late_dep_lea = compute_late_sets(full_env, batch_idx=idx.item())
-            
+
             # Compute served/unserved sets
             ref_served = set([node for route in ref_route for node in route])
             learned_served = set([node for route in learned_routes for node in route])
             all_nodes = set(range(1, len(cust)))
-            
+
             # Compute infeasible nodes
             depot_pos = cust[0:1, :2]
             node_pos = cust[:, :2]
@@ -541,35 +614,36 @@ class PVRPAnalyzer:
             infeasible_mask = round_trip_time > cust[:, 3]
             infeasible_nodes = set(torch.nonzero(infeasible_mask).flatten().tolist())
             infeasible_nodes.discard(0)  # Ensure depot is not in infeasible
-            
+
             ref_unserved = (all_nodes - ref_served) - infeasible_nodes
             learned_unserved = (all_nodes - learned_served) - infeasible_nodes
-            
-            # Dummy late sets for OR-Tools visualization (simplified)
-            surv = cust[:, 3]
-            mean_s = surv[1:].mean()
-            late_ref = set(torch.nonzero(surv < mean_s * 0.7).flatten().tolist())
-            late_dep_ref = set(torch.nonzero(surv < mean_s * 0.5).flatten().tolist())
-            late_ref.discard(0)  # Ensure depot is not in late sets
-            late_dep_ref.discard(0)
+
+            # Compute late sets for OR-Tools using actual route simulation
+            late_ref, late_dep_ref = compute_late_sets_from_routes(cust, ref_route, data.veh_speed)
+
+            # Also compute late sets for learned routes using same method for consistency
+            late_lea_check, late_dep_lea_check = compute_late_sets_from_routes(cust, learned_routes, data.veh_speed)
             
             fig, (ref_ax, ax) = plt.subplots(1, 2, figsize=(24, 10))
-            
+
             ref_title = (f" OR-Tools (Cost: {ref_cost:.1f})\n"
-                         f" Served: {len(ref_served)} | Unserved: {len(ref_unserved)} | "
+                         f" Served: {len(ref_served)} | Late Pickup: {len(late_ref)} | "
+                         f"Late Hospital: {len(late_dep_ref - late_ref)} | Unserved: {len(ref_unserved)} | "
                          f"Infeasible: {len(infeasible_nodes)}")
             
+            # Use the route-based computation for consistency (late_lea_check matches how OR-Tools is computed)
             learned_title = (f" RL Routing (Cost: {model_cost:.1f}, Gap: {gap:.0%})\n"
-                            f" Served: {len(learned_served)} | Late Pickup: {len(late_lea)} | "
-                            f"Late Hospital: {len(late_dep_lea)} | Unserved: {len(learned_unserved)} | "
+                            f" Served: {len(learned_served)} | Late Pickup: {len(late_lea_check)} | "
+                            f"Late Hospital: {len(late_dep_lea_check - late_lea_check)} | Unserved: {len(learned_unserved)} | "
                             f"Infeasible: {len(infeasible_nodes)}")
             
             self.plot_pvrp_instance(ref_ax, cust, ref_route, ref_title,
                                    late_nodes=late_ref, late_depot_nodes=late_dep_ref,
                                    unserved_nodes=ref_unserved, infeasible_nodes=infeasible_nodes,
                                    colors=self.colors)
+            # Use route-based late sets for consistency between OR-Tools and learned model
             self.plot_pvrp_instance(ax, cust, learned_routes, learned_title,
-                                   late_nodes=late_lea, late_depot_nodes=late_dep_lea,
+                                   late_nodes=late_lea_check, late_depot_nodes=late_dep_lea_check,
                                    unserved_nodes=learned_unserved, infeasible_nodes=infeasible_nodes,
                                    colors=self.colors)
             

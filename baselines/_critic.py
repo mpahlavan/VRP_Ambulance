@@ -122,5 +122,16 @@ class CriticBaseline(Baseline):
     def load_state_dict(self, state_dict):
         return self.project.load_state_dict(state_dict)
 
+    # def to(self, device):
+    #     self.project.to(device = device)
+
     def to(self, device):
-        self.project.to(device = device)
+        """Move model to device"""
+        # Move submodules
+        self.project = self.project.to(device=device)
+        
+        # Move parent class
+        super().to(device)
+        
+        # Return self for chaining
+        return self
