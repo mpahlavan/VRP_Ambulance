@@ -17,7 +17,7 @@ def main(args):
     n = args.customers_count
     m = args.vehicles_count
     epoch = args.epoch_count
-    date = "251202-0824"
+    date = "250727-1714"
     out_pdf_dir = f"./results/{pb}_n{n}m{m}_{time.strftime('%y%m%d-%H%M')}/"
     os.makedirs(out_pdf_dir, exist_ok = True)
     data_path = f"./data/{pb}_n{n}m{m}/norm_data_spoil_{args.spoilage_range[0]}_{args.spoilage_range[1]}.pyth"
@@ -48,7 +48,15 @@ def main(args):
             logps = []
             for batch in tqdm(loader, desc="Evaluating Greedy"):
                 batch = batch.to(dev)
-                env = PVRP_Environment(data, batch)
+                # env = PVRP_Environment(data, batch)
+                env = PVRP_Environment(
+                    data, batch,
+                    spoilage_penalty=args.spoilage_penalty,
+                    unserved_penalty=args.unserved_penalty,
+                    additional_late_penalty=args.additional_late_penalty,
+                    dist_penalty_coef=args.dist_penalty_coef,
+                    idle_penalty_coef=args.idle_penalty_coef,
+                )
 
                 _, logp, rewards = learner(env)
                 costs.append(-torch.stack(rewards).sum(0).squeeze(1))

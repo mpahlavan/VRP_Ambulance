@@ -5,7 +5,7 @@ import copy
 import torch
 
 class RolloutBaseline(Baseline):
-    def __init__(self, learner, rollout_count = 10, update_threshold = 0.05):
+    def __init__(self, learner, rollout_count = 3, update_threshold = 0.05):
         super().__init__(learner, True)
 
         if not SCIPY_ENABLED:
@@ -28,7 +28,7 @@ class RolloutBaseline(Baseline):
     def update(self, rewards, bl_vals):
         if (rewards - bl_vals).mean() > 0:
             t, p = ttest_rel(rewards.numpy(), bl_vals.numpy())
-            if p > 1-self.thresh:
+            if p < self.thresh:
                 self.policy.load_state_dict(self.learner.state_dict())
 
     def to(self, device):

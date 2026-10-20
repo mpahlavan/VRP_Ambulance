@@ -9,13 +9,13 @@ import os
 
 BATCH_SIZE = 10000
 SEED = 231034871114
-SPOILAGE_RANGES = (60, 240) # [(30, 120), (60, 240), (120, 480)]  # Different spoilage time ranges
+SPOILAGE_RANGES = (360, 460) # [(30, 120), (60, 240), (120, 480)]  # Different spoilage time ranges
 ROLLOUTS = 100
 
 torch.manual_seed(SEED)
 
 # Generate data for Perishable VRP
-for n, m in ((10,2), (20,4)):#, (50,10)
+for n, m in ((10,2), (20,4), (50,10),(15,3),(100,20)):#, (50,10)
     out_dir = "data/pvrp_n{}m{}".format(n, m)
     os.makedirs(out_dir, exist_ok=True)
 

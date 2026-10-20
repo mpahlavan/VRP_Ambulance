@@ -17,7 +17,7 @@ def main(args):
 
     # Basic dataset with unit demands and spoilage times
     data = PVRP_Dataset.generate(
-        batch_size=args.batch_size,
+        batch_size=800,
         cust_count=args.customers_count,
         veh_count=args.vehicles_count,
         veh_capa=args.veh_capa,  # Adjusted for unit demands

@@ -1,663 +1,455 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+
 """
-Enhanced PVRP Analyzer with Corrected Cost Calculation
+Route comparison between the critic and rollout policies on the same instance.
+
 """
 
-import os, time, numpy as np, torch
+import os
+import time
+import numpy as np
+import torch
+
 from marpdan import AttentionLearner
 from marpdan.problems import PVRP_Dataset, PVRP_Environment
-from marpdan.externals import ort_solve
 from marpdan.utils import *
 from marpdan.dep import matplotlib as mpl, pyplot as plt
-from torch.utils.data import DataLoader
 
-mpl.rcParams["axes.titlesize"] = 20
-SEED = 12348877555
-ROLLOUTS = 800
-BATCH_SIZE = 800
+# ── Configuration ──────────────────────────────────────────────────────────
+CRITIC_DATE = "260908-1016"
+ROLLOUT_DATE = "260905-1821"
+EPOCH = 1000
+
+ROLLOUTS = 100            # best-of-N, matching the paper
+INFERENCE = "sampling"    # "sampling" or "greedy"
+N_FIGURES = 6
+
+COST_PARAMS = {
+    'spoilage_penalty': 1,
+    'additional_late_penalty': 1,
+    'unserved_penalty': 2,
+    'idle_penalty_coef': 0.5,
+    'dist_penalty_coef': 0.05,
+}
+
+dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 plt.style.use('seaborn-v0_8')
 mpl.rcParams.update({
     'font.size': 11,
-    'axes.titlesize': 13,
-    'figure.titlesize': 15,
-    'legend.fontsize': 10,
+    'axes.titlesize': 12,
+    'figure.titlesize': 14,
+    'legend.fontsize': 9,
     'xtick.labelsize': 10,
-    'ytick.labelsize': 10
+    'ytick.labelsize': 10,
 })
 
+HOSPITAL_COLOR = '#C0392B'
+# One color per ambulance, shared across both panels so routes can be matched
+AMBULANCE_COLORS = ['#1B6CA8', '#D1495B', '#2E8B57', '#8E6C8A', '#E07A00']
 
-def compute_late_sets(env, batch_idx=0):
+
+def make_env(batch_data):
+    return PVRP_Environment(
+        batch_data,
+        spoilage_penalty=COST_PARAMS['spoilage_penalty'],
+        unserved_penalty=COST_PARAMS['unserved_penalty'],
+        additional_late_penalty=COST_PARAMS['additional_late_penalty'],
+        dist_penalty_coef=COST_PARAMS['dist_penalty_coef'],
+        idle_penalty_coef=COST_PARAMS['idle_penalty_coef'],
+        logger=None,
+    )
+
+
+def load_policy(n, m, date, epoch):
+    path = f"./output/PVRPn{n}m{m}_{date}/chkpt_ep{epoch}.pyth"
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Checkpoint not found: {path}")
+
+    learner = AttentionLearner(
+        cust_feat_size=PVRP_Dataset.CUST_FEAT_SIZE,
+        veh_state_size=PVRP_Environment.VEH_STATE_SIZE,
+    )
+    chkpt = torch.load(path, map_location="cpu")
+    if "model" in chkpt:
+        load_old_weights(learner, chkpt["model"])
+    elif "learner" in chkpt:
+        learner.load_state_dict(chkpt["learner"])
+    else:
+        raise KeyError(f"Unknown checkpoint format: {list(chkpt.keys())}")
+
+    learner.to(dev)
+    learner.eval()
+    return learner
+
+
+# ── Route extraction and violation accounting ──────────────────────────────
+def extract_routes(actions, batch_idx, veh_count):
+    routes = [[] for _ in range(veh_count)]
+    for veh_idx, node_idx in actions:
+        v = veh_idx[batch_idx].item()
+        n = node_idx[batch_idx].item()
+        if n > 0:
+            routes[v].append(n)
+    return routes
+
+
+def route_lengths(nodes, routes):
     """
-    Extract late sets from environment state for a specific batch instance
-
-    Args:
-        env: PVRP_Environment
-        batch_idx: which instance in the batch to analyze
-
-    Returns:
-        late_nodes: set of nodes with late pickup
-        late_depot: set of nodes with late hospital arrival
+    Euclidean length of each route, hospital to hospital, in problem units.
+    Returns the per-ambulance lengths and their total.
     """
-    if not hasattr(env, "vehicles"):
-        return set(), set()
-
-    # Late pickup nodes
-    late_nodes = set()
-    if getattr(env, "late_nodes", None) is not None:
-        late_mask = env.late_nodes[batch_idx]  # Get specific batch instance
-        late_indices = torch.nonzero(late_mask, as_tuple=False).flatten().tolist()
-        late_nodes = set(late_indices)
-        late_nodes.discard(0)  # Remove depot
-
-    # Late depot delivery
-    late_depot = set()
-    arrival_in_depot = env.vehicles[batch_idx, :, 3]  # Arrival times for batch_idx
-    spoilage_times = env.nodes[batch_idx, :, 3]       # Survival times for batch_idx
-
-    for v in range(env.veh_count):
-        # Get nodes served by vehicle v in batch_idx
-        nodes_for_vehicle = torch.nonzero(
-            env.vehicle_routes[batch_idx] == v, as_tuple=False
-        ).flatten()
-
-        if nodes_for_vehicle.numel() == 0:
+    depot = nodes[0, :2]
+    lengths = []
+    for route in routes:
+        if not route:
+            lengths.append(0.0)
             continue
+        total = 0.0
+        pos = depot
+        for n in route:
+            total += torch.norm(nodes[n, :2] - pos).item()
+            pos = nodes[n, :2]
+        total += torch.norm(depot - pos).item()
+        lengths.append(total)
+    return lengths, sum(lengths)
 
-        t_arrival_depot = arrival_in_depot[v].item()
 
-        for n in nodes_for_vehicle.tolist():
-            if n > 0 and t_arrival_depot > spoilage_times[n]:  # Exclude depot
-                late_depot.add(n)
-
-    return late_nodes, late_depot
-
-
-def compute_late_sets_from_routes(nodes, routes, veh_speed):
-    """
-    Compute late sets by simulating routes directly.
-
-    This function correctly calculates delays for ANY set of routes (OR-Tools or learned)
-    by simulating the actual travel times and comparing against spoilage constraints.
-
-    Args:
-        nodes: Tensor of shape [num_nodes, 4] with (x, y, demand, spoilage_time)
-        routes: List of routes, each route is a list of node indices
-        veh_speed: Vehicle speed for travel time calculation
-
-    Returns:
-        late_pickup: set of nodes with late pickup (arrival > latest_pickup_time)
-        late_depot: set of nodes with late hospital delivery (depot_arrival > spoilage_time)
-    """
-    late_pickup = set()
-    late_depot = set()
-
+def compute_violations(nodes, routes, veh_speed):
+    late_pickup, late_hospital = set(), set()
     depot_pos = nodes[0, :2]
+    served = set()
 
     for route in routes:
         if not route:
             continue
 
-        # Simulate vehicle traveling along the route
         current_pos = depot_pos.clone()
         current_time = 0.0
-
-        # Track nodes picked up on this trip (to check depot delivery time)
-        nodes_on_vehicle = []
+        onboard = []
 
         for node_idx in route:
-            # Travel to node
+            served.add(node_idx)
             node_pos = nodes[node_idx, :2]
-            dist = torch.norm(node_pos - current_pos).item()
-            travel_time = dist / veh_speed
-            arrival_time = current_time + travel_time
+            arrival = current_time + torch.norm(node_pos - current_pos).item() / veh_speed
 
-            # Get spoilage time for this patient
-            spoilage_time = nodes[node_idx, 3].item()
-
-            # Calculate time needed to return to depot from this node
-            dist_to_depot = torch.norm(depot_pos - node_pos).item()
-            return_time = dist_to_depot / veh_speed
-
-            # Latest pickup time = spoilage_time - time_to_return_to_depot
-            # (Patient must reach hospital before spoilage)
-            latest_pickup_time = spoilage_time - return_time
-
-            # Check if pickup is late
-            if arrival_time > latest_pickup_time:
+            spoilage = nodes[node_idx, 3].item()
+            return_time = torch.norm(depot_pos - node_pos).item() / veh_speed
+            if arrival > spoilage - return_time:
                 late_pickup.add(node_idx)
 
-            # Track this node for depot delivery check
-            nodes_on_vehicle.append((node_idx, spoilage_time))
-
-            # Update position and time
+            onboard.append((node_idx, spoilage))
             current_pos = node_pos
-            current_time = arrival_time
+            current_time = arrival
 
-        # After completing the route, vehicle returns to depot
-        dist_to_depot = torch.norm(depot_pos - current_pos).item()
-        depot_arrival_time = current_time + dist_to_depot / veh_speed
+        depot_arrival = current_time + torch.norm(depot_pos - current_pos).item() / veh_speed
+        for node_idx, spoilage in onboard:
+            if depot_arrival > spoilage:
+                late_hospital.add(node_idx)
 
-        # Check if any patient on vehicle arrives at hospital late
-        for node_idx, spoilage_time in nodes_on_vehicle:
-            if depot_arrival_time > spoilage_time:
-                late_depot.add(node_idx)
+    to_depot = torch.norm(nodes[:, :2] - nodes[0:1, :2], dim=-1)
+    infeasible = set(torch.nonzero(2 * to_depot / veh_speed > nodes[:, 3]).flatten().tolist())
+    infeasible.discard(0)
 
-    return late_pickup, late_depot
-
-
-
+    unserved = (set(range(1, len(nodes))) - served) - infeasible
+    return late_pickup, late_hospital, unserved, infeasible
 
 
+# ── Policy evaluation ──────────────────────────────────────────────────────
+def run_policy(data, learner, mode):
+    n_inst = data.nodes.size(0)
+    veh_count = data.veh_count
+    costs = torch.zeros(n_inst)
+    all_routes = [None] * n_inst
 
-class PVRPAnalyzer:
-    def __init__(self, args):
-        self.problem_type = args.problem_type
-        self.n_customers = args.customers_count
-        self.n_vehicles = args.vehicles_count
-        self.veh_capa = args.veh_capa
-        self.veh_speed = args.veh_speed
-        self.min_cust_count = args.min_cust_count
-        self.cust_loc_range = args.loc_range
-        self.horizon = args.horizon
-        self.spoilage_range = args.spoilage_range
-        date = "260104-0727"
-        self.MODEL_PATH = f"./output/PVRPn{args.customers_count}m{args.vehicles_count}_{date}/chkpt_ep{args.epoch_count}.pyth"
-        self.learner = self._load_model()
-        
-        self.colors = {
-            'ortools': '#2E86AB',
-            'learned_greedy': '#A23B72',
-            'learned_sampling': '#F18F01',
-            'improvement': '#2E8B57',
-            'degradation': '#DC143C',
-            'hospital': '#FF6B6B',
-            'patient_urgent': '#FF4757',
-            'patient_normal': '#3742FA',
-            'late_pickup': '#FF3838',
-            'late_depot': '#FF6348',
-            'unserved': '#8B0000',
-            'infeasible': '#696969'
-        }
-        
-    def _load_model(self):
-        try:
-            chkpt = torch.load(self.MODEL_PATH, map_location="cpu")
-            learner = AttentionLearner(
-                cust_feat_size=PVRP_Dataset.CUST_FEAT_SIZE,
-                veh_state_size=PVRP_Environment.VEH_STATE_SIZE
+    if mode == "greedy":
+        learner.greedy = True
+        batch = 32
+        for start in range(0, n_inst, batch):
+            idx = list(range(start, min(start + batch, n_inst)))
+            batch_data = PVRP_Dataset(
+                nodes=data.nodes[idx].to(dev),
+                cust_mask=data.cust_mask[idx].to(dev) if data.cust_mask is not None else None,
+                veh_count=veh_count, veh_capa=data.veh_capa, veh_speed=data.veh_speed,
             )
-            learner.load_state_dict(chkpt["model"])
-            learner.eval()
-            return learner
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Model file not found at {self.MODEL_PATH}")
-    
-    def generate_data(self):
-        torch.manual_seed(SEED)
-        data = PVRP_Dataset.generate(
-            BATCH_SIZE, 
-            self.n_customers, 
-            self.n_vehicles, 
-            self.veh_capa,
-            self.veh_speed,
-            self.min_cust_count,
-            self.cust_loc_range,
-            self.horizon,
-            self.spoilage_range
-        )
-        ref_routes = ort_solve(data)
-        data.normalize()
-        return data, ref_routes
-
-    def calculate_reference_costs(self, data, ref_routes):
-        """محاسبه هزینه‌های OR-Tools با environment (شامل penalties)"""
-        ref_costs = []
-        
-        for idx, routes in enumerate(ref_routes):
-            env = PVRP_Environment(
-                data, 
-                nodes=data.nodes[idx:idx+1],  # ← FIX: instance صحیح
-                cust_mask=data.cust_mask[idx:idx+1] if data.cust_mask is not None else None
-            )
-            env.reset()
-            rewards = []
-            
-            for route in routes:
-                for node in route:
-                    rewards.append(env.step(torch.tensor([[node]], dtype=torch.long)))
-            
-            if not env.done:
-                rewards.append(env.step(torch.tensor([[0]], dtype=torch.long)))
-            
-            ref_costs.append(-torch.stack(rewards).sum())
-        
-        return torch.stack(ref_costs)
-
-    def evaluate_learned_model_batch(self, data):
-        """Evaluate learned model using batch processing"""
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.learner.to(device)
-        data.nodes = data.nodes.to(device)
-        if data.cust_mask is not None:
-            data.cust_mask = data.cust_mask.to(device)
-        
-        # GREEDY evaluation
-        print(" Evaluating Greedy Ambulance Routing...")
-        self.learner.greedy = True
-        
-        env = PVRP_Environment(data)
-        with torch.no_grad():
-            _, logps, rewards = self.learner(env)
-        
-        greedy_costs = torch.stack(rewards).sum(0).mul(-1).squeeze(1).cpu()
-        greedy_probs = torch.stack(logps).sum(0).squeeze(1).exp().cpu()
-        
-        print(f"greedy {greedy_costs.mean():.3f} +- {greedy_costs.std():.3f} w.p. {greedy_probs.mean():.3g}")
-
-        # SAMPLING evaluation  
-        print(" Evaluating Sampling Ambulance Routing...")
-        self.learner.greedy = False
-        
-        roll_costs = []
-        roll_logps = []
-        for _ in range(ROLLOUTS):
-            env = PVRP_Environment(data)
+            env = make_env(batch_data)
             with torch.no_grad():
-                _, logp, rewards = self.learner(env)
-            roll_costs.append(torch.stack(rewards).sum(0).mul(-1).squeeze(1))
-            roll_logps.append(torch.stack(logp).sum(0).squeeze(1))
-        
-        best_cost, best_idx = torch.stack(roll_costs).min(0, keepdim=True)
-        sampling_costs = best_cost.squeeze(0).cpu()
-        sampling_probs = torch.stack(roll_logps).gather(0, best_idx).squeeze(0).exp().cpu()
-        
-        print(f"sample {sampling_costs.mean():.3f} +- {sampling_costs.std():.3f} w.p. {sampling_probs.mean():.3g}")
-        
-        return greedy_costs, sampling_costs
+                actions, _, rewards = learner(env)
+            batch_costs = torch.stack(rewards).sum(0).mul(-1).squeeze(1).detach().cpu()
+            for local, g in enumerate(idx):
+                costs[g] = batch_costs[local]
+                all_routes[g] = extract_routes(actions, local, veh_count)
+    else:
+        learner.greedy = False
+        for g in range(n_inst):
+            rep_nodes = data.nodes[g].unsqueeze(0).expand(ROLLOUTS, -1, -1).contiguous().to(dev)
+            rep_mask = (data.cust_mask[g].unsqueeze(0).expand(ROLLOUTS, -1).contiguous().to(dev)
+                        if data.cust_mask is not None else None)
+            rep_data = PVRP_Dataset(
+                nodes=rep_nodes, cust_mask=rep_mask,
+                veh_count=veh_count, veh_capa=data.veh_capa, veh_speed=data.veh_speed,
+            )
+            env = make_env(rep_data)
+            with torch.no_grad():
+                actions, _, rewards = learner(env)
+            sample_costs = torch.stack(rewards).sum(0).mul(-1).squeeze(-1).detach().cpu()
+            best = int(sample_costs.argmin().item())
+            costs[g] = sample_costs[best]
+            all_routes[g] = extract_routes(actions, best, veh_count)
 
-    @staticmethod
-    def plot_pvrp_instance(ax, nodes, routes, title, 
-                          late_nodes=None, late_depot_nodes=None, 
-                          unserved_nodes=None, infeasible_nodes=None, colors=None):
-        """Enhanced plot with ambulance theme"""
-        late_nodes = late_nodes or set()
-        late_depot_nodes = late_depot_nodes or set()
-        unserved_nodes = unserved_nodes or set()
-        infeasible_nodes = infeasible_nodes or set()
-        colors = colors or {}
-        
-        # Hospital
-        ax.plot(nodes[0,0].item(), nodes[0,1].item(), 
-                marker='H', markersize=15, color=colors.get('hospital', '#FF6B6B'), 
-                markeredgecolor='black', markeredgewidth=2,
-                label=' Hospital')
-        
-        # Patients
-        if len(nodes) > 1:
-             scatter = ax.scatter(nodes[1:,0], nodes[1:,1], 
-                             c=nodes[1:,3], 
-                             cmap='RdYlGn',
-                             edgecolors="k", linewidths=0.4,
-                             s=180, 
-                             label='patient (color=survival time)')
-             plt.colorbar(scatter, ax=ax, shrink=0.8)
-        
-        # Routes
-        route_styles = ['-', '--', '-.', ':']
-        route_colors = plt.cm.Set1(np.linspace(0, 1, max(len(routes), 1)))
-        
-        for route_idx, (route, color) in enumerate(zip(routes, route_colors)):
-            if not route:
-                continue
-                
-            full_route = [0] + route + [0]
-            points = nodes[full_route]
-            
-            style = route_styles[route_idx % len(route_styles)]
-            ax.plot(points[:,0], points[:,1], style, 
-                   color=color, alpha=0.8, linewidth=3,
-                   label=f' Route {route_idx+1}')
-            
-            for i in range(len(points)-1):
-                ax.annotate('', xy=(points[i+1, 0], points[i+1, 1]), 
-                           xytext=(points[i, 0], points[i, 1]),
-                           arrowprops=dict(arrowstyle='->', color=color, lw=2, alpha=0.7))
-        
-        late_depot_only = late_depot_nodes - late_nodes
-        
-        # Infeasible
-        if infeasible_nodes:
-            for n in infeasible_nodes:
-                ax.scatter(nodes[n, 0], nodes[n, 1],
-                        marker='^', s=250, facecolors='none',
-                        edgecolors='red', linewidths=2.5,
-                        label=" Infeasible" if n == min(infeasible_nodes) else "",
-                        zorder=6)
-        
-        # Late pickup
-        if late_nodes:
-            for n in late_nodes:
-                ax.scatter(nodes[n, 0], nodes[n, 1],
-                        marker='o', s=220, facecolors='none',
-                        edgecolors='red', linewidths=3.0,
-                        label="Late pickup" if n == min(late_nodes) else "",
-                        zorder=7)
-        
-        # Late hospital
-        if late_depot_only:
-            for n in late_depot_only:
-                ax.scatter(nodes[n, 0], nodes[n, 1],
-                        marker='o', s=240, facecolors='none',
-                        edgecolors='darkorange', linewidths=2.8,
-                        label="Late at hospital" if n == min(late_depot_only) else "",
-                        zorder=7)
-        
-        # Unserved
-        if unserved_nodes:
-            for n in unserved_nodes:
-                ax.plot(nodes[n, 0], nodes[n, 1],
-                        marker='x', markersize=12, color='black',
-                        markeredgewidth=1.1, alpha=0.8,
-                        label=" Unserved" if n == min(unserved_nodes) else "",
-                        zorder=8)
-        
-        ax.set_title(title, fontsize=14, pad=20, fontweight='bold')
-        ax.grid(True, alpha=0.3, linestyle='--')
-        ax.set_aspect("equal")
-        
-        legend = ax.legend(loc="upper left", fontsize=9, frameon=True, 
-                          fancybox=True, shadow=True, framealpha=0.9)
-        legend.get_frame().set_facecolor('white')
-        
-        for spine in ax.spines.values():
-            spine.set_linewidth(1.5)
-            spine.set_color('black')
+    return costs, all_routes
 
-    def plot_cost_analysis(self, ref_costs, greedy_costs, sampling_costs, outdir):
-        """Create comprehensive cost analysis plots"""
-        # Calculate gaps
-        greedy_gaps = greedy_costs / ref_costs - 1
-        sampling_gaps = sampling_costs / ref_costs - 1
-        
-        # Calculate statistics
-        ref_mean = ref_costs.mean().item()
-        greedy_mean = greedy_costs.mean().item()
-        sampling_mean = sampling_costs.mean().item()
-        
-        greedy_gap_mean = greedy_gaps.mean().item()
-        sampling_gap_mean = sampling_gaps.mean().item()
-        
-        greedy_improvement_rate = (greedy_gaps < 0).sum().item() / len(greedy_gaps) * 100
-        sampling_improvement_rate = (sampling_gaps < 0).sum().item() / len(sampling_gaps) * 100
-        
-        # Main dashboard
-        fig1, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(18, 14))
-        fig1.suptitle(' Ambulance Routing Performance Dashboard ', fontsize=18, y=0.96, fontweight='bold')
-        
-        # Box plot comparison
-        bp = ax1.boxplot([ref_costs.numpy(), greedy_costs.numpy(), sampling_costs.numpy()],
-                         labels=[' OR-Tools', ' RL Greedy', ' RL Sampling'],
-                         patch_artist=True)
-        bp['boxes'][0].set_facecolor(self.colors['ortools'])
-        bp['boxes'][1].set_facecolor(self.colors['learned_greedy'])
-        bp['boxes'][2].set_facecolor(self.colors['learned_sampling'])
-        for box in bp['boxes']:
-            box.set_alpha(0.7)
-        
-        ax1.set_title(' Cost Distribution Comparison', fontsize=14, pad=15, fontweight='bold')
-        ax1.set_ylabel('Emergency Response Cost', fontsize=12)
-        ax1.grid(True, alpha=0.3)
-        
-        ax1.text(1, ref_mean + ref_costs.std().item() * 0.3, f'μ={ref_mean:.1f}', 
-                 ha='center', va='bottom', fontweight='bold', fontsize=10,
-                 bbox=dict(boxstyle="round,pad=0.3", facecolor=self.colors['ortools'], alpha=0.8))
-        ax1.text(2, greedy_mean + greedy_costs.std().item() * 0.3, f'μ={greedy_mean:.1f}', 
-                 ha='center', va='bottom', fontweight='bold', fontsize=10,
-                 bbox=dict(boxstyle="round,pad=0.3", facecolor=self.colors['learned_greedy'], alpha=0.8))
-        ax1.text(3, sampling_mean + sampling_costs.std().item() * 0.3, f'μ={sampling_mean:.1f}', 
-                 ha='center', va='bottom', fontweight='bold', fontsize=10,
-                 bbox=dict(boxstyle="round,pad=0.3", facecolor=self.colors['learned_sampling'], alpha=0.8))
-        
-        # Gap histogram
-        ax2.hist([greedy_gaps.numpy() * 100, sampling_gaps.numpy() * 100], 
-                bins=20, alpha=0.7, 
-                color=[self.colors['learned_greedy'], self.colors['learned_sampling']],
-                label=[' Greedy', ' Sampling'],
-                edgecolor='black', linewidth=0.5)
-        ax2.axvline(greedy_gap_mean * 100, color=self.colors['learned_greedy'], linestyle='--', linewidth=2,
-                    label=f'Greedy Mean: {greedy_gap_mean:+.1%}')
-        ax2.axvline(sampling_gap_mean * 100, color=self.colors['learned_sampling'], linestyle='--', linewidth=2,
-                    label=f'Sampling Mean: {sampling_gap_mean:+.1%}')
-        ax2.axvline(0, color='blue', linestyle='-', alpha=0.8, linewidth=2,
-                    label=' OR-Tools baseline')
-        
-        ax2.set_title(' Performance Gap Distribution', fontsize=14, pad=15, fontweight='bold')
-        ax2.set_xlabel('Performance Gap (%)', fontsize=12)
-        ax2.set_ylabel('Frequency', fontsize=12)
-        ax2.legend(loc='upper right', fontsize=10)
-        ax2.grid(True, alpha=0.3)
-        
-        # Scatter plot
-        scatter_colors_greedy = [self.colors['improvement'] if g < 0 else self.colors['degradation'] 
-                                for g in greedy_gaps.numpy()]
-        scatter_colors_sampling = [self.colors['improvement'] if g < 0 else self.colors['degradation'] 
-                                  for g in sampling_gaps.numpy()]
-        
-        ax3.scatter(ref_costs.numpy(), greedy_costs.numpy(), 
-                   c=scatter_colors_greedy, alpha=0.7, s=45, 
-                   edgecolors='black', linewidth=0.3, label=' Greedy')
-        ax3.scatter(ref_costs.numpy(), sampling_costs.numpy(), 
-                   c=scatter_colors_sampling, alpha=0.7, s=45, marker='^',
-                   edgecolors='black', linewidth=0.3, label=' Sampling')
-        
-        min_cost = min(ref_costs.min().item(), greedy_costs.min().item(), sampling_costs.min().item())
-        max_cost = max(ref_costs.max().item(), greedy_costs.max().item(), sampling_costs.max().item())
-        ax3.plot([min_cost, max_cost], [min_cost, max_cost], 'k--', alpha=0.8,
-                linewidth=2.5, label='📏 Equal Performance')
-        
-        ax3.set_xlabel(' OR-Tools Cost', fontsize=12)
-        ax3.set_ylabel(' RL Agent Cost', fontsize=12)
-        ax3.set_title(' Direct Cost Comparison', fontsize=14, pad=15, fontweight='bold')
-        ax3.grid(True, alpha=0.3)
-        ax3.legend(loc='upper left', fontsize=9)
-        
-        # Performance summary
-        ax4.text(0.5, 0.9, ' Performance Summary', transform=ax4.transAxes, 
-                ha='center', va='top', fontsize=16, fontweight='bold')
-        
-        summary_text = f"""
- OR-Tools Avg Cost: {ref_mean:.1f}
 
- Greedy Ambulance:
-  • Avg Cost: {greedy_mean:.1f}
-  • Avg Gap: {greedy_gap_mean:+.1%}
-  • Better Cases: {greedy_improvement_rate:.1f}%
+# ── Plotting ───────────────────────────────────────────────────────────────
+def plot_instance(ax, nodes, routes, lengths, title, late_pickup, late_hospital,
+                  unserved, infeasible):
+    ax.plot(nodes[0, 0].item(), nodes[0, 1].item(),
+            marker='H', markersize=16, color=HOSPITAL_COLOR,
+            markeredgecolor='black', markeredgewidth=1.5,
+            linestyle='None', label='Hospital', zorder=10)
 
- Sampling Ambulance:
-  • Avg Cost: {sampling_mean:.1f}
-  • Avg Gap: {sampling_gap_mean:+.1%}
-  • Better Cases: {sampling_improvement_rate:.1f}%
+    scatter = ax.scatter(nodes[1:, 0], nodes[1:, 1],
+                         c=nodes[1:, 3], cmap='RdYlGn',
+                         edgecolors='k', linewidths=0.4, s=150,
+                         label='Patient (color: survival time)', zorder=5)
+    plt.colorbar(scatter, ax=ax, shrink=0.75, label='Survival time')
 
- Best Strategy: {"Sampling" if sampling_gap_mean < greedy_gap_mean else "Greedy"}
-        """
-        
-        ax4.text(0.1, 0.8, summary_text, transform=ax4.transAxes,
-                fontsize=12, va='top', ha='left', fontfamily='monospace',
-                bbox=dict(boxstyle="round,pad=0.5", facecolor="lightblue", alpha=0.8))
-        
-        ax4.set_xlim(0, 1)
-        ax4.set_ylim(0, 1)
-        ax4.axis('off')
-        
-        plt.subplots_adjust(left=0.08, bottom=0.08, right=0.92, top=0.92, 
-                           wspace=0.25, hspace=0.35)
-        
-        cost_plot_path = f"{outdir}/ambulance_performance_dashboard.pdf"
-        fig1.savefig(cost_plot_path, bbox_inches="tight", dpi=300, facecolor='white')
-        plt.close(fig1)
-        
-        # Simple comparison plot
-        fig2, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-        fig2.suptitle(f' Ambulance Routing Performance Summary ', fontsize=14, fontweight='bold')
-        
-        # Bar chart
-        means = [ref_mean, greedy_mean, sampling_mean]
-        stds = [ref_costs.std().item(), greedy_costs.std().item(), sampling_costs.std().item()]
-        labels = [' OR-Tools', ' RL Greedy', ' RL Sampling']
-        bar_colors = [self.colors['ortools'], self.colors['learned_greedy'], self.colors['learned_sampling']]
-        
-        bars = ax1.bar(labels, means, yerr=stds, capsize=5,
-                       color=bar_colors, alpha=0.7, edgecolor='black')
-        ax1.set_title(' Average Response Cost', fontweight='bold')
-        ax1.set_ylabel('Emergency Response Cost', fontsize=12)
-        ax1.grid(True, alpha=0.3)
-        
-        for bar, mean, std in zip(bars, means, stds):
-            ax1.text(bar.get_x() + bar.get_width()/2., bar.get_height() + std + 0.1,
-                    f'{mean:.1f}±{std:.1f}', ha='center', va='bottom', fontweight='bold')
-        
-        # Gap comparison
-        gap_data = [greedy_gaps.numpy() * 100, sampling_gaps.numpy() * 100]
-        gap_labels = [' Greedy', ' Sampling']
-        gap_colors = [self.colors['learned_greedy'], self.colors['learned_sampling']]
-        
-        bp2 = ax2.boxplot(gap_data, labels=gap_labels, patch_artist=True)
-        for box, color in zip(bp2['boxes'], gap_colors):
-            box.set_facecolor(color)
-            box.set_alpha(0.7)
-        
-        ax2.axhline(y=0, color='black', linestyle='-', alpha=0.7)
-        ax2.set_title(' Performance Gap Distribution', fontweight='bold')
-        ax2.set_ylabel('Performance Gap (%)', fontsize=12)
-        ax2.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        simple_plot_path = f"{outdir}/ambulance_comparison_simple.pdf"
-        fig2.savefig(simple_plot_path, bbox_inches="tight", dpi=300)
-        plt.close(fig2)
-        
-        print(f"\n Enhanced ambulance analysis plots created:")
-        print(f"   • {cost_plot_path}")
-        print(f"   • {simple_plot_path}")
+    # Color identifies the ambulance, and is the same in both panels, so that
+    # a route reassigned between ambulances is visible as a color change.
+    for r_idx, route in enumerate(routes):
+        if not route:
+            continue
+        color = AMBULANCE_COLORS[r_idx % len(AMBULANCE_COLORS)]
+        pts = nodes[[0] + route + [0]]
+        ax.plot(pts[:, 0], pts[:, 1], '-', color=color,
+                alpha=0.85, linewidth=2.5,
+                label=f'Ambulance {r_idx + 1} (length {lengths[r_idx]:.3f})',
+                zorder=3)
+        for i in range(len(pts) - 1):
+            ax.annotate('', xy=(pts[i + 1, 0], pts[i + 1, 1]),
+                        xytext=(pts[i, 0], pts[i, 1]),
+                        arrowprops=dict(arrowstyle='->', color=color,
+                                        lw=1.8, alpha=0.7))
 
-    def analyze_and_visualize(self):
-        """تحلیل و بصری‌سازی کامل"""
-        
-        data, ref_routes = self.generate_data()
-        ref_costs = self.calculate_reference_costs(data, ref_routes)
-        
-        greedy_costs, sampling_costs = self.evaluate_learned_model_batch(data)
-        
-        greedy_gaps = greedy_costs / ref_costs - 1
-        sampling_gaps = sampling_costs / ref_costs - 1
-        
-        print("\n Emergency Response Cost Analysis:")
-        print(f"Average OR-Tools Cost: {ref_costs.mean().item():.2f}")
-        print(f"Average Greedy Cost: {greedy_costs.mean().item():.2f} (Gap: {greedy_gaps.mean():.2%})")
-        print(f"Average Sampling Cost: {sampling_costs.mean().item():.2f} (Gap: {sampling_gaps.mean():.2%})")
-        
-        output_dir = f"results/ambulance_n{self.n_customers}m{self.n_vehicles}_{time.strftime('%y%m%d-%H%M')}"
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Plot cost analysis
-        self.plot_cost_analysis(ref_costs, greedy_costs, sampling_costs, output_dir)
-        
-        print(" Creating route visualizations...")
-        
-        greedy_gaps_sorted, sub_idx = greedy_gaps.sort()
-        
-        display_indices = torch.cat((
-            sub_idx[:4],
-            sub_idx[BATCH_SIZE//2-2:BATCH_SIZE//2+2],
-            sub_idx[-4:]
-        ))
-        
-        # Run learned model for all instances to get routes
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.learner.greedy = True
-        
-        full_env = PVRP_Environment(data)
-        with torch.no_grad():
-            learned_actions, _, _ = self.learner(full_env)
-        
-        for i, idx in enumerate(display_indices):
-            cust = data.nodes[idx]
-            ref_route = ref_routes[idx]
-            ref_cost = ref_costs[idx].item()
-            model_cost = greedy_costs[idx].item()
-            gap = model_cost / ref_cost - 1
-            
-            # Extract learned routes for this instance
-            learned_routes = [[] for _ in range(data.veh_count)]
-            for action in learned_actions:
-                veh_idx, node_idx = action
-                v = veh_idx[idx].item()
-                n = node_idx[idx].item()
-                if n > 0:
-                    learned_routes[v].append(n)
-            learned_routes = [route for route in learned_routes if route]
-            
-            late_lea, late_dep_lea = compute_late_sets(full_env, batch_idx=idx.item())
+    hospital_only = late_hospital - late_pickup
 
-            # Compute served/unserved sets
-            ref_served = set([node for route in ref_route for node in route])
-            learned_served = set([node for route in learned_routes for node in route])
-            all_nodes = set(range(1, len(cust)))
+    for n in sorted(infeasible):
+        ax.scatter(nodes[n, 0], nodes[n, 1], marker='^', s=230,
+                   facecolors='none', edgecolors='dimgray', linewidths=2.0,
+                   label='Structurally infeasible' if n == min(infeasible) else '',
+                   zorder=6)
+    for n in sorted(late_pickup):
+        ax.scatter(nodes[n, 0], nodes[n, 1], marker='o', s=210,
+                   facecolors='none', edgecolors='red', linewidths=2.6,
+                   label='Late pickup' if n == min(late_pickup) else '',
+                   zorder=7)
+    for n in sorted(hospital_only):
+        ax.scatter(nodes[n, 0], nodes[n, 1], marker='o', s=230,
+                   facecolors='none', edgecolors='darkorange', linewidths=2.4,
+                   label='Late at hospital' if n == min(hospital_only) else '',
+                   zorder=7)
+    for n in sorted(unserved):
+        ax.plot(nodes[n, 0], nodes[n, 1], marker='x', markersize=12,
+                color='black', markeredgewidth=2.0, linestyle='None',
+                label='Unserved' if n == min(unserved) else '', zorder=8)
 
-            # Compute infeasible nodes
-            depot_pos = cust[0:1, :2]
-            node_pos = cust[:, :2]
-            to_node_dist = torch.norm(node_pos - depot_pos, dim=-1)
-            round_trip_time = 2 * (to_node_dist / data.veh_speed)
-            infeasible_mask = round_trip_time > cust[:, 3]
-            infeasible_nodes = set(torch.nonzero(infeasible_mask).flatten().tolist())
-            infeasible_nodes.discard(0)  # Ensure depot is not in infeasible
+    ax.set_title(title, fontsize=12, pad=14)
+    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.set_aspect('equal')
+    ax.legend(loc='upper left', fontsize=8, framealpha=0.9)
 
-            ref_unserved = (all_nodes - ref_served) - infeasible_nodes
-            learned_unserved = (all_nodes - learned_served) - infeasible_nodes
 
-            # Compute late sets for OR-Tools using actual route simulation
-            late_ref, late_dep_ref = compute_late_sets_from_routes(cust, ref_route, data.veh_speed)
-
-            # Also compute late sets for learned routes using same method for consistency
-            late_lea_check, late_dep_lea_check = compute_late_sets_from_routes(cust, learned_routes, data.veh_speed)
-            
-            fig, (ref_ax, ax) = plt.subplots(1, 2, figsize=(24, 10))
-
-            ref_title = (f" OR-Tools (Cost: {ref_cost:.1f})\n"
-                         f" Served: {len(ref_served)} | Late Pickup: {len(late_ref)} | "
-                         f"Late Hospital: {len(late_dep_ref - late_ref)} | Unserved: {len(ref_unserved)} | "
-                         f"Infeasible: {len(infeasible_nodes)}")
-            
-            # Use the route-based computation for consistency (late_lea_check matches how OR-Tools is computed)
-            learned_title = (f" RL Routing (Cost: {model_cost:.1f}, Gap: {gap:.0%})\n"
-                            f" Served: {len(learned_served)} | Late Pickup: {len(late_lea_check)} | "
-                            f"Late Hospital: {len(late_dep_lea_check - late_lea_check)} | Unserved: {len(learned_unserved)} | "
-                            f"Infeasible: {len(infeasible_nodes)}")
-            
-            self.plot_pvrp_instance(ref_ax, cust, ref_route, ref_title,
-                                   late_nodes=late_ref, late_depot_nodes=late_dep_ref,
-                                   unserved_nodes=ref_unserved, infeasible_nodes=infeasible_nodes,
-                                   colors=self.colors)
-            # Use route-based late sets for consistency between OR-Tools and learned model
-            self.plot_pvrp_instance(ax, cust, learned_routes, learned_title,
-                                   late_nodes=late_lea_check, late_depot_nodes=late_dep_lea_check,
-                                   unserved_nodes=learned_unserved, infeasible_nodes=infeasible_nodes,
-                                   colors=self.colors)
-            
-            fig.tight_layout()
-            file_path = f"{output_dir}/routes_{i:02}_{100*gap:.0f}.pdf"
-            fig.savefig(file_path, bbox_inches='tight', dpi=300)
-            plt.close(fig)
-        
-        print(f"\n Analysis complete! Results in: {output_dir}/")
+def summarize(cost, total_length, late_p, late_h, unserved, served_count):
+    return (f"cost {cost:.3f} | total route length {total_length:.3f} | "
+            f"served {served_count}\n"
+            f"late pickup {len(late_p)} | late hospital {len(late_h - late_p)} | "
+            f"unserved {len(unserved)}")
 
 
 def main(args):
-    analyzer = PVRPAnalyzer(args)
-    analyzer.analyze_and_visualize()
+    n, m = args.customers_count, args.vehicles_count
+    data_path = (f"./data/pvrp_n{n}m{m}/"
+                 f"norm_data_spoil_{args.spoilage_range[0]}_{args.spoilage_range[1]}.pyth")
+
+    print(f"Loading test data from {data_path}")
+    data = torch.load(data_path)
+    n_inst = data.nodes.size(0)
+    print(f"{n_inst} instances, {n} patients, {data.veh_count} ambulances")
+
+    print(f"\nLoading critic policy   ({CRITIC_DATE})")
+    critic = load_policy(n, m, CRITIC_DATE, EPOCH)
+    print(f"Loading rollout policy  ({ROLLOUT_DATE})")
+    rollout = load_policy(n, m, ROLLOUT_DATE, EPOCH)
+
+    print(f"\nRunning both policies in {INFERENCE} mode...")
+    t0 = time.time()
+    critic_costs, critic_routes = run_policy(data, critic, INFERENCE)
+    rollout_costs, rollout_routes = run_policy(data, rollout, INFERENCE)
+    print(f"done in {time.time() - t0:.1f}s")
+    print(f"  critic  mean cost {critic_costs.mean():.4f}")
+    print(f"  rollout mean cost {rollout_costs.mean():.4f}")
+
+    # ── Per-instance violation counts for both policies ──
+    rows = []
+    for idx in range(n_inst):
+        nodes = data.nodes[idx].cpu()
+        c_routes = [r for r in critic_routes[idx] if r]
+        r_routes = [r for r in rollout_routes[idx] if r]
+
+        c_lp, c_lh, c_un, infeasible = compute_violations(nodes, c_routes, data.veh_speed)
+        r_lp, r_lh, r_un, _ = compute_violations(nodes, r_routes, data.veh_speed)
+
+        _, c_len = route_lengths(nodes, c_routes)
+        _, r_len = route_lengths(nodes, r_routes)
+
+        rows.append({
+            'idx': idx,
+            'c_cost': critic_costs[idx].item(),
+            'r_cost': rollout_costs[idx].item(),
+            'c_temporal': len(c_lp) + len(c_lh - c_lp),
+            'r_temporal': len(r_lp) + len(r_lh - r_lp),
+            'c_unserved': len(c_un),
+            'r_unserved': len(r_un),
+            'c_length': c_len,
+            'r_length': r_len,
+        })
+
+    # ── How often do the two policies actually differ? ──
+    cost_diff = np.array([r['c_cost'] - r['r_cost'] for r in rows])
+    identical = np.isclose(cost_diff, 0.0, atol=1e-6)
+    temporal_diff = np.array([r['c_temporal'] - r['r_temporal'] for r in rows])
+    unserved_diff = np.array([r['c_unserved'] - r['r_unserved'] for r in rows])
+    length_diff = np.array([r['c_length'] - r['r_length'] for r in rows])
+
+    print("\n" + "=" * 72)
+    print("DISTRIBUTION OF PER-INSTANCE DIFFERENCES (critic minus rollout)")
+    print("=" * 72)
+    print(f"  identical cost:            {identical.sum():4d} / {n_inst}  "
+          f"({100*identical.mean():.1f}%)")
+    print(f"  critic cheaper:            {(cost_diff < -1e-6).sum():4d} "
+          f"({100*(cost_diff < -1e-6).mean():.1f}%)")
+    print(f"  rollout cheaper:           {(cost_diff >  1e-6).sum():4d} "
+          f"({100*(cost_diff >  1e-6).mean():.1f}%)")
+    print(f"  mean cost difference:      {cost_diff.mean():+.4f}")
+    print(f"  median cost difference:    {np.median(cost_diff):+.4f}")
+    print(f"  mean over differing only:  {cost_diff[~identical].mean():+.4f}"
+          if (~identical).any() else "  (no differing instances)")
+    print()
+    print(f"  mean route-length difference:   {length_diff.mean():+.4f}")
+    print(f"  median route-length difference: {np.median(length_diff):+.4f}")
+    print(f"  implied mean cost from distance "
+          f"({COST_PARAMS['dist_penalty_coef']} per unit): "
+          f"{COST_PARAMS['dist_penalty_coef'] * length_diff.mean():+.4f}")
+    print()
+    print(f"  critic has more temporal violations: "
+          f"{(temporal_diff > 0).sum():4d} ({100*(temporal_diff > 0).mean():.1f}%)")
+    print(f"  critic serves more patients:         "
+          f"{(unserved_diff < 0).sum():4d} ({100*(unserved_diff < 0).mean():.1f}%)")
+    print(f"  both at once (characteristic trade): "
+          f"{((temporal_diff > 0) & (unserved_diff < 0)).sum():4d} "
+          f"({100*((temporal_diff > 0) & (unserved_diff < 0)).mean():.1f}%)")
+
+    # ── Instance selection ──
+    # Rule: among instances exhibiting the characteristic trade-off, that is
+    # the critic policy incurring more temporal violations while leaving fewer
+    # patients unserved, take those whose cost difference is closest to the
+    # mean difference over that subset. This targets the behavior the paper
+    # reports, and the rule is applied to counts rather than to the figures.
+    candidates = [i for i in range(n_inst)
+                  if temporal_diff[i] > 0 and unserved_diff[i] < 0]
+
+    if not candidates:
+        print("\nNo instance shows the characteristic trade-off; "
+              "falling back to the largest temporal-violation difference.")
+        candidates = list(np.argsort(-temporal_diff)[:N_FIGURES])
+        selected = candidates[:N_FIGURES]
+        rule = ("instances with the largest difference in temporal violations "
+                "between the two policies")
+    else:
+        sub = cost_diff[candidates]
+        target = sub.mean()
+        order = np.argsort(np.abs(sub - target))
+        selected = [candidates[i] for i in order[:N_FIGURES]]
+        rule = (f"instances in which the critic policy incurs more temporal "
+                f"violations while leaving fewer patients unserved "
+                f"({len(candidates)} of {n_inst} instances), with cost "
+                f"difference closest to the mean over that subset")
+
+    print(f"\nSelection rule: {rule}")
+    print(f"Selected instances: {selected}")
+
+    outdir = (f"results/critic_vs_rollout_n{n}m{m}_{INFERENCE}_"
+              f"{time.strftime('%y%m%d-%H%M')}")
+    os.makedirs(outdir, exist_ok=True)
+
+    for idx in selected:
+        nodes = data.nodes[idx].cpu()
+        c_routes = [r for r in critic_routes[idx] if r]
+        r_routes = [r for r in rollout_routes[idx] if r]
+
+        c_lp, c_lh, c_un, infeasible = compute_violations(nodes, c_routes, data.veh_speed)
+        r_lp, r_lh, r_un, _ = compute_violations(nodes, r_routes, data.veh_speed)
+
+        c_lengths, c_total = route_lengths(nodes, c_routes)
+        r_lengths, r_total = route_lengths(nodes, r_routes)
+
+        c_served = sum(len(r) for r in c_routes)
+        r_served = sum(len(r) for r in r_routes)
+
+        fig, (ax_c, ax_r) = plt.subplots(1, 2, figsize=(20, 9.5))
+
+        plot_instance(ax_c, nodes, c_routes, c_lengths,
+                      "Learned critic baseline\n" +
+                      summarize(critic_costs[idx].item(), c_total,
+                                c_lp, c_lh, c_un, c_served),
+                      c_lp, c_lh, c_un, infeasible)
+
+        plot_instance(ax_r, nodes, r_routes, r_lengths,
+                      "Monte Carlo rollout baseline\n" +
+                      summarize(rollout_costs[idx].item(), r_total,
+                                r_lp, r_lh, r_un, r_served),
+                      r_lp, r_lh, r_un, infeasible)
+
+        fig.suptitle(f"Test instance {idx} — {INFERENCE} inference", fontsize=14)
+        fig.tight_layout()
+
+        path = f"{outdir}/instance_{idx:04d}.pdf"
+        fig.savefig(path, bbox_inches='tight', dpi=300)
+        plt.close(fig)
+        print(f"  wrote {path}  "
+              f"(cost {critic_costs[idx]:.3f} vs {rollout_costs[idx]:.3f}, "
+              f"length {c_total:.3f} vs {r_total:.3f})")
+
+    # ── Statistics and caption, so the selection rule travels with the figure ──
+    with open(f"{outdir}/statistics.txt", "w") as f:
+        f.write(f"Per-instance comparison, {INFERENCE} inference, "
+                f"{n_inst} test instances\n")
+        f.write("=" * 72 + "\n")
+        f.write(f"identical cost:   {identical.sum()} ({100*identical.mean():.1f}%)\n")
+        f.write(f"critic cheaper:   {(cost_diff < -1e-6).sum()}\n")
+        f.write(f"rollout cheaper:  {(cost_diff > 1e-6).sum()}\n")
+        f.write(f"mean cost difference:     {cost_diff.mean():+.4f}\n")
+        f.write(f"median cost difference:   {np.median(cost_diff):+.4f}\n")
+        f.write(f"mean length difference:   {length_diff.mean():+.4f}\n")
+        f.write(f"median length difference: {np.median(length_diff):+.4f}\n")
+        f.write(f"characteristic trade-off present in "
+                f"{((temporal_diff > 0) & (unserved_diff < 0)).sum()} instances\n")
+
+    with open(f"{outdir}/caption.txt", "w") as f:
+        f.write(
+            f"Routing solutions produced by the two policy variants on the same test "
+            f"instance under {INFERENCE} inference. Line color identifies the ambulance "
+            f"and is consistent across panels. Instances were selected as {rule}. "
+            f"Red circles mark late pickups, orange circles late hospital arrivals, "
+            f"crosses unserved patients, and triangles patients whose direct round trip "
+            f"from the hospital already exceeds their survival time. Patient color "
+            f"encodes survival time. Total route length is given in problem units; "
+            f"with a distance coefficient of {COST_PARAMS['dist_penalty_coef']}, "
+            f"differences in length of the magnitude seen here contribute little to "
+            f"total cost relative to the deadline and coverage penalties.\n"
+        )
+    print(f"\nStatistics written to {outdir}/statistics.txt")
+    print(f"Caption written to {outdir}/caption.txt")
+
 
 if __name__ == "__main__":
     main(parse_args())

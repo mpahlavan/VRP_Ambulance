@@ -3,14 +3,26 @@ from marpdan.dep import tqdm
 from multiprocessing import Pool
 from marpdan.utils import parse_args
 
-def _solve_cp(nodes, veh_count, veh_capa, veh_speed, spoilage_penalty):
-    """Solve single PVRP instance using OR-Tools"""
-    
-    # Create routing manager
+def _solve_cp(nodes, veh_count, veh_capa, veh_speed,
+              spoilage_penalty, unserved_penalty, dist_penalty_coef):
+    """Solve single PVRP instance using OR-Tools.
+
+    Coverage is a soft constraint: every patient carries a drop penalty
+    equivalent to the RL environment's unserved-patient penalty, so the
+    solver may trade coverage against lateness on the same terms.
+    """
+
     manager = pywrapcp.RoutingIndexManager(nodes.size(0), veh_count, 0)
     routing = pywrapcp.RoutingModel(manager)
 
-    # Distance callback
+    # --- objective is in distance units; convert RL reward units to match ---
+    # RL cost:  alpha2 * distance  +  alpha1 * late  +  alpha4 * unserved
+    # OR-Tools: 1.0   * distance  +  P_late * late   +  P_drop * unserved
+    # so   P = alpha / alpha2
+    unit = float(dist_penalty_coef) if dist_penalty_coef > 0 else 1.0
+    late_penalty_ort = int(round(spoilage_penalty / unit))
+    drop_penalty_ort = int(round(unserved_penalty / unit))
+
     def distance_callback(from_index, to_index):
         from_node = manager.IndexToNode(from_index)
         to_node = manager.IndexToNode(to_index)
@@ -19,134 +31,79 @@ def _solve_cp(nodes, veh_count, veh_capa, veh_speed, spoilage_penalty):
     dist_callback_idx = routing.RegisterTransitCallback(distance_callback)
     routing.SetArcCostEvaluatorOfAllVehicles(dist_callback_idx)
 
-    # Time callback including travel times
     def time_callback(from_index, to_index):
-        from_node = manager.IndexToNode(from_index)
-        to_node = manager.IndexToNode(to_index)
-        # Travel time between nodes
         return int(distance_callback(from_index, to_index) / veh_speed)
 
     time_callback_idx = routing.RegisterTransitCallback(time_callback)
 
-    # Add Time dimension
     max_time = int(nodes[:, 3].max().item())
-    routing.AddDimension(
-        time_callback_idx,
-        0,  # no slack
-        max_time,  # maximum time (spoilage deadline)
-        True,  # start cumul to zero
-        "Time"
-    )
+    routing.AddDimension(time_callback_idx, 0, max_time, True, "Time")
     time_dimension = routing.GetDimensionOrDie("Time")
 
-    # Add capacity constraints (unit demands)
     def demand_callback(from_index):
-        from_node = manager.IndexToNode(from_index)
-        return 1 if from_node != 0 else 0  # Unit demand except depot
+        return 1 if manager.IndexToNode(from_index) != 0 else 0
 
     demand_callback_idx = routing.RegisterUnaryTransitCallback(demand_callback)
     routing.AddDimensionWithVehicleCapacity(
-        demand_callback_idx,
-        0,  # no slack
-        [veh_capa] * veh_count,  # vehicle capacities
-        True,  # start cumul to zero
-        "Capacity"
+        demand_callback_idx, 0, [veh_capa] * veh_count, True, "Capacity"
     )
-    # Calculate depot return times for each node first
+
     depot_pos = nodes[0, :2]
-    depot_return_times = []
-    for i in range(nodes.size(0)):
-        node_pos = nodes[i, :2]
-        dist_to_depot = (node_pos - depot_pos).pow(2).sum().pow(0.5)
-        return_time = int(dist_to_depot / veh_speed)
-        depot_return_times.append(return_time)
-
-    # # Add spoilage time constraints with depot return consideration
-    # for node in range(1, nodes.size(0)):  # Skip depot
-    #     index = manager.NodeToIndex(node)
-    #     spoilage_time = int(nodes[node, 3].item())
-    #     # Latest pickup time = spoilage time - time to return to depot
-    #     latest_pickup = spoilage_time - depot_return_times[node]
-        
-
-    #     if latest_pickup <= 0:
-    #         continue  # Skip nodes that can't be reached in time
-    #     # Add time windows for spoilage
-    #     time_dimension.CumulVar(index).SetRange(0,  max(1, latest_pickup))
-        
-    #     # Add penalty for approaching spoilage time
-    #     time_dimension.SetCumulVarSoftUpperBound(
-    #         index, 
-    #         latest_pickup,  # Use latest pickup time for penalty too
-    #         int(spoilage_penalty)
-    #     )
-
-
+    depot_return_times = [
+        int((nodes[i, :2] - depot_pos).pow(2).sum().pow(0.5) / veh_speed)
+        for i in range(nodes.size(0))
+    ]
 
     for node in range(1, nodes.size(0)):
         index = manager.NodeToIndex(node)
         spoilage_time = int(nodes[node, 3].item())
-
         latest_pickup = spoilage_time - depot_return_times[node]
 
         if latest_pickup <= 0:
-            routing.AddDisjunction([index], int(1e6))
+            # Structurally infeasible: excluded from the RL feasibility mask too,
+            # so it is dropped at zero cost and does not distort the objective.
+            routing.AddDisjunction([index], 0)
             continue
 
-        # Hard feasibility
-        time_dimension.CumulVar(index).SetRange(0, latest_pickup)
+        # Coverage is optional, priced at the RL unserved-patient penalty.
+        routing.AddDisjunction([index], drop_penalty_ort)
 
-        # Soft lateness penalty
-        if spoilage_penalty > 0:
+        # Pickup deadline is soft, priced at the RL lateness penalty.
+        time_dimension.CumulVar(index).SetRange(0, max_time)
+        if late_penalty_ort > 0:
             time_dimension.SetCumulVarSoftUpperBound(
-                index,
-                latest_pickup,
-                spoilage_penalty
+                index, latest_pickup, late_penalty_ort
             )
 
-    # Solver settings
-    # search_parameters = pywrapcp.DefaultRoutingSearchParameters()
-    # search_parameters.first_solution_strategy = (
-    #     routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-    # )
-    # search_parameters.local_search_metaheuristic = (
-    #     routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
-    # )
-    # search_parameters.time_limit.FromSeconds(30)
-    
-    
     search_parameters = pywrapcp.DefaultRoutingSearchParameters()
-    # Use SAVINGS for better initial clustering
     search_parameters.first_solution_strategy = (
-       routing_enums_pb2.FirstSolutionStrategy.SAVINGS
+        routing_enums_pb2.FirstSolutionStrategy.SAVINGS
     )
-    # Use TABU_SEARCH to escape local optima
     search_parameters.local_search_metaheuristic = (
-    routing_enums_pb2.LocalSearchMetaheuristic.TABU_SEARCH
+        routing_enums_pb2.LocalSearchMetaheuristic.TABU_SEARCH
     )
     search_parameters.time_limit.FromSeconds(6000)
     search_parameters.solution_limit = 100
 
-    # Solve
     solution = routing.SolveWithParameters(search_parameters)
     if not solution:
-        return []
+        return [[] for _ in range(veh_count)]
 
-
-    # Extract routes
     routes = []
     for vehicle_id in range(veh_count):
         route = []
         index = routing.Start(vehicle_id)
         while not routing.IsEnd(index):
             node_idx = manager.IndexToNode(index)
-            if node_idx != 0:  # Don't include depot in middle of route
+            if node_idx != 0:
                 route.append(node_idx)
             index = solution.Value(routing.NextVar(index))
-        if route:  # Only add non-empty routes
-            routes.append(route)
+        routes.append(route)          # ← بدون شرط if route
 
     return routes
+
+
+
 
 def print_solution(routes, nodes, veh_speed):
     """Print readable solution"""
@@ -192,22 +149,16 @@ def print_solution(routes, nodes, veh_speed):
 
 def ort_solve(data):
     args = parse_args()
-    spoilage_penalty = args.spoilage_penalty
-    """Solve PVRP instances using OR-Tools"""
     with Pool() as p:
         with tqdm(desc="Calling ORTools", total=data.batch_size) as pbar:
             results = [
                 p.apply_async(
                     _solve_cp,
-                    (nodes, data.veh_count, data.veh_capa, data.veh_speed, spoilage_penalty),
+                    (nodes, data.veh_count, data.veh_capa, data.veh_speed,
+                     args.spoilage_penalty, args.unserved_penalty,
+                     args.dist_penalty_coef),
                     callback=lambda _: pbar.update()
                 ) for nodes in data.nodes_gen()
             ]
             routes = [res.get() for res in results]
-            
-            # Print first solution for debugging
-            if routes and routes[0]:
-                print("\nExample solution:")
-                print_solution(routes[0], next(data.nodes_gen()), data.veh_speed)
-                
     return routes

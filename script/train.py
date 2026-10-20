@@ -144,12 +144,14 @@ def main(args):
     
     env_params = [
     args.spoilage_penalty,  
-    args.unserved_penalty,  
-    args.dist_penalty_coef,  
+    args.unserved_penalty,
     args.pickup_bonus_coef,  
     args.additional_late_penalty,  
     args.capacity_usage_coef,
+    args.dist_penalty_coef,
     args.idle_penalty_coef  
+  
+
 ]
     
     test_env = Environment(test_data, None, None, *env_params)

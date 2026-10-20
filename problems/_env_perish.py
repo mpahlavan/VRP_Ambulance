@@ -74,8 +74,8 @@ class PVRP_Environment:
     CUST_FEAT_SIZE = 4  # x,y, demand(1), spoilage_time
 
     def __init__(self, data, nodes=None, cust_mask=None,
-                spoilage_penalty=1, unserved_penalty=1,pickup_bonus_coef=1,
-                additional_late_penalty=1, capacity_usage_coef=0.0,dist_penalty_coef=0.05,idle_penalty_coef =10,success_bonus=10, logger=None):
+                spoilage_penalty=1, unserved_penalty=2,pickup_bonus_coef=1,
+                additional_late_penalty=1, capacity_usage_coef=0.0,dist_penalty_coef=0.05,idle_penalty_coef =0.5,success_bonus=10, logger=None):
         self.veh_count = data.veh_count
         self.veh_capa = data.veh_capa
         self.veh_speed = data.veh_speed
@@ -96,7 +96,9 @@ class PVRP_Environment:
        
         
         # Initialize logger
-        self.logger = logger or PVRP_Custom_Logger()
+        # self.logger = logger or PVRP_Custom_Logger()
+        self.logger = None
+
         
         # Track total costs per batch
         self.batch_costs = torch.zeros(self.minibatch_size)
@@ -187,55 +189,49 @@ class PVRP_Environment:
             self.cur_veh)
         
         # Log vehicle paths and capacity
-        path_info = []
-        for b in range(self.minibatch_size):
-            node_idx = cust_idx[b, 0].item()
-            veh_idx = self.cur_veh_idx[b, 0].item()
-            new_capacity = self.cur_veh[b, 0, 2].item()
-            visit_count = self.vehicle_visit_count[b, veh_idx].item()
+        # path_info = []
+        # for b in range(self.minibatch_size):
+        #     node_idx = cust_idx[b, 0].item()
+        #     veh_idx = self.cur_veh_idx[b, 0].item()
+        #     new_capacity = self.cur_veh[b, 0, 2].item()
+        #     visit_count = self.vehicle_visit_count[b, veh_idx].item()
             
-            if node_idx > 0:  # Customer node
-                path_info.append(
-                    f"PATH | B{b:03d}-V{veh_idx}: "
-                    f"N{node_idx:02d} | "
-                    f"Arrival={arrival_time[b, 0].item():.1f} | "
-                    f"Latest={latest_arrival[b, 0].item():.1f} | "
-                    f"{'LATE' if lateness[b, 0].item() > 0 else 'On-time'} | "
-                    f"Cap: {old_capacity[b, 0].item():.1f}→{new_capacity:.1f} | "
-                    f"Visits: {visit_count}"
-                )
-            else:  # Depot
-                path_info.append(
-                    f"PATH | B{b:03d}-V{veh_idx}: "
-                    f"Depot | "
-                    f"Arrival={arrival_time[b, 0].item():.1f} | "
-                    f"Cap={new_capacity:.1f} | "
-                    f"Visits: {visit_count}"
-                )
+        #     if node_idx > 0:  # Customer node
+        #         path_info.append(
+        #             f"PATH | B{b:03d}-V{veh_idx}: "
+        #             f"N{node_idx:02d} | "
+        #             f"Arrival={arrival_time[b, 0].item():.1f} | "
+        #             f"Latest={latest_arrival[b, 0].item():.1f} | "
+        #             f"{'LATE' if lateness[b, 0].item() > 0 else 'On-time'} | "
+        #             f"Cap: {old_capacity[b, 0].item():.1f}→{new_capacity:.1f} | "
+        #             f"Visits: {visit_count}"
+        #         )
+        #     else:  # Depot
+        #         path_info.append(
+        #             f"PATH | B{b:03d}-V{veh_idx}: "
+        #             f"Depot | "
+        #             f"Arrival={arrival_time[b, 0].item():.1f} | "
+        #             f"Cap={new_capacity:.1f} | "
+        #             f"Visits: {visit_count}"
+        #         )
         
-        if path_info:
-            self.logger.info('\n'.join(path_info))
+        # if path_info:
+        #     self.logger.info('\n'.join(path_info))
         
         
         return dist, lateness, ontime_pickup
     
     def _update_done(self, cust_idx):
         self.veh_done.scatter_(1, self.cur_veh_idx, cust_idx == 0)
+        #% self.done = bool(self.veh_done.all()) edition Oct 6
+        self.inst_done = self.veh_done.all(dim=1, keepdim=True)
         self.done = bool(self.veh_done.all())
    
     def _update_mask(self, cust_idx):
         # Mark served customers
         self.served.scatter_(1, cust_idx, cust_idx > 0)
         
-        # Update urgent deadline
-        # if cust_idx.any():
-        #     new_deadlines = self.nodes.gather(1, cust_idx[:, :, None].expand(-1, -1, self.CUST_FEAT_SIZE))[:, :, 3]
-        #     self.urgent_deadlines.scatter_(1, self.cur_veh_idx, 
-        #         torch.min(self.urgent_deadlines.gather(1, self.cur_veh_idx), new_deadlines))
-
-         # ----- CAPACITY MASK FIX -----
-        # Get remaining capacity for current vehicle
-        # ----- CAPACITY MASK FIX -----
+       
         # Get remaining capacity for current vehicle
         remaining_capacity = self.cur_veh[:, :, 2]  # [batch, 1]
 
@@ -254,16 +250,16 @@ class PVRP_Environment:
             full_capacity_mask[b, v_idx] = capacity_mask[b, 0]
 
         # Enhanced debug logging for capacity
-        for b in range(self.minibatch_size):
-            v_idx = self.cur_veh_idx[b, 0].item()
-            is_at_capacity = capacity_mask[b, 0, 0].item()  # Check if vehicle is at capacity
-            affected_nodes = capacity_mask[b, 0].sum().item() if is_at_capacity else 0
+        # for b in range(self.minibatch_size):
+        #     v_idx = self.cur_veh_idx[b, 0].item()
+        #     is_at_capacity = capacity_mask[b, 0, 0].item()  # Check if vehicle is at capacity
+        #     affected_nodes = capacity_mask[b, 0].sum().item() if is_at_capacity else 0
             
-            self.logger.info(f"CAPACITY | B{b:03d} | V{v_idx} | " +
-                            f"Remaining={remaining_capacity[b, 0].item():.1f} | " +
-                            f"At Capacity={is_at_capacity} | " +
-                            f"Affected Nodes={affected_nodes} | " +
-                            f"Other Vehicles Protected=True")
+        #     self.logger.info(f"CAPACITY | B{b:03d} | V{v_idx} | " +
+        #                     f"Remaining={remaining_capacity[b, 0].item():.1f} | " +
+        #                     f"At Capacity={is_at_capacity} | " +
+        #                     f"Affected Nodes={affected_nodes} | " +
+        #                     f"Other Vehicles Protected=True")
         # Combine masks with proper dimensions
         # Combine all masks
         self.mask = (
@@ -280,14 +276,14 @@ class PVRP_Environment:
             self.cur_veh_idx[:, :, None].expand(-1, -1, self.nodes_count))
         
         # Log visible nodes for current vehicle
-        for b in range(self.minibatch_size):
-            veh_idx = self.cur_veh_idx[b, 0].item()
-            visible_nodes = (~self.cur_veh_mask[b, 0]).nonzero().flatten().tolist()
-            visible_str = ", ".join(str(n) for n in visible_nodes if n > 0)
-            if visible_str:
-                self.logger.info(f"| MASK | B{b:03d} | V{veh_idx} sees nodes: [{visible_str}]")
-            else:
-                self.logger.info(f"| MASK | B{b:03d} | V{veh_idx} sees no nodes (capacity={remaining_capacity[b, 0].item():.1f})")
+        # for b in range(self.minibatch_size):
+        #     veh_idx = self.cur_veh_idx[b, 0].item()
+        #     visible_nodes = (~self.cur_veh_mask[b, 0]).nonzero().flatten().tolist()
+        #     visible_str = ", ".join(str(n) for n in visible_nodes if n > 0)
+        #     if visible_str:
+        #         self.logger.info(f"| MASK | B{b:03d} | V{veh_idx} sees nodes: [{visible_str}]")
+        #     else:
+        #         self.logger.info(f"| MASK | B{b:03d} | V{veh_idx} sees no nodes (capacity={remaining_capacity[b, 0].item():.1f})")
     
     
     # def _update_cur_veh(self):
@@ -409,15 +405,21 @@ class PVRP_Environment:
         # Reset batch tracking
         self.batch_costs = torch.zeros(self.minibatch_size)
         self.batch_served = torch.zeros(self.minibatch_size, dtype=torch.long)
+
+        #% edition Oct 6
+        self.inst_done = self.nodes.new_zeros((self.minibatch_size, 1), dtype=torch.bool)
         
         
     def step(self, cust_idx):
+
+        #% edition Oct 6
+        was_done = self.inst_done.clone()
         # 1) ظرفیت‌‌سنجی
         for b in range(self.minibatch_size):
             node = cust_idx[b,0].item()
-            if node > 0 and self.cur_veh[b,0,2] < 1:
-                self.logger.info(f"CAPACITY ERROR | B{b:03d} | node {node} بدون ظرفیت")
-                cust_idx[b,0] = 0
+            # if node > 0 and self.cur_veh[b,0,2] < 1:
+            #     self.logger.info(f"CAPACITY ERROR | B{b:03d} | node {node} بدون ظرفیت")
+            #     cust_idx[b,0] = 0
 
         # 2) به‌روزرسانی وضعیت
         dest = self.nodes.gather(1, cust_idx[:,:,None].expand(-1,-1,self.CUST_FEAT_SIZE))
@@ -430,12 +432,18 @@ class PVRP_Environment:
         reward = (-self.spoilage_penalty * node_late
                 - self.dist_penalty_coef * dist)
 
+        #% edition Oct 6 پایین قبل ریترن بود آوردم بعد پاداش هر گام گذاشتم
+
+        if reward.dim()==1:
+            reward = reward.unsqueeze(-1)
+        #% edition Oct 6
+        reward = reward.masked_fill(was_done, 0.0)
+
         # 4) پایان اپیزود
         if self.done:
             feasible_mask = ~self.infeasible_nodes
-            feasible_mask[:,0] = False               # دپو را حذف کن
+            feasible_mask[:,0] = False              
             
-            # A) late در سطح گره
             pickup_late_cnt  = (self.late_nodes & feasible_mask).float().sum(dim=1, keepdim=True)
 
             
@@ -443,12 +451,12 @@ class PVRP_Environment:
             late_at_depot_cnt  = torch.zeros_like(pickup_late_cnt )            # [B,1]
             late_at_depot_bool = torch.zeros_like(self.late_nodes, dtype=torch.bool)
 
-            arrival_in_depot = self.vehicles[:, :, 3]       # [B,V]  (اسکالرِ زمانِ برگشت)
+            arrival_in_depot = self.vehicles[:, :, 3]      
 
             for b in range(self.minibatch_size):
                 for v in range(self.veh_count):
 
-                    # گره‌هایی که وسیلهٔ v در این batch حمل کرده (به جز دپو)
+                    
                     nodes_v = torch.nonzero(
                         (self.vehicle_routes[b] == v) &
                         (torch.arange(self.nodes_count, device=self.nodes.device) > 0),
@@ -470,7 +478,7 @@ class PVRP_Environment:
 
 
             # C) unserved
-            mask_nodes = torch.arange(self.nodes_count, device=self.nodes.device) > 0  # [N]  True برای نودهای غیر-دپو
+            mask_nodes = torch.arange(self.nodes_count, device=self.nodes.device) > 0  
             feasible_non_depot = feasible_mask & mask_nodes           # [B,N]
 
             unserved_cnt = (~self.served & feasible_non_depot) \
@@ -490,7 +498,6 @@ class PVRP_Environment:
             final_reward = ( J_depot + J_unserv + J_idle )
             reward += final_reward 
 
-            # موفقیت کامل
             # cust_mask      = (torch.arange(self.nodes_count, device=self.nodes.device) > 0)
             # feasible_cust  = feasible_mask & cust_mask          # فقط  قابل‌خدمت
             # good_nodes     = self.served & (~self.late_nodes) & (~late_at_depot_bool)
@@ -508,28 +515,33 @@ class PVRP_Environment:
             # success_bonus_80 = self.success_bonus * (success_ratio >= 0.8).float()
             # reward += success_bonus_80
             
-            if self.logger:  # فقط وجود logger را چک کن
-                for b in range(self.minibatch_size):
-                    # محاسبه آمار تکمیلی
-                    total_feasible = feasible_non_depot[b].sum().item()
-                    total_served = self.served[b, 1:].sum().item()  # حذف depot از شمارش
-                    serving_rate = (total_served / total_feasible * 100) if total_feasible > 0 else 0
+            # if self.logger:  
+            #     for b in range(self.minibatch_size):
+                
+            #         total_feasible = feasible_non_depot[b].sum().item()
+            #         total_served = self.served[b, 1:].sum().item()  # حذف depot از شمارش
+            #         serving_rate = (total_served / total_feasible * 100) if total_feasible > 0 else 0
                     
-                    # لاگ کامل reward breakdown
-                    self.logger.info(
-                        f"[EPISODE_END] B{b:03d} | "
-                        f"Served={total_served}/{total_feasible} ({serving_rate:.1f}%) | "
-                        f"PickupLate={pickup_late_cnt[b,0]:.0f} | "
-                        f"DepotLate={late_at_depot_cnt[b,0]:.0f} | "
-                        f"Unserved={unserved_cnt[b,0]:.0f} | "
-                        f"Idle={idle_cnt[b,0]:.0f} | "
-                        f"Rewards: Depot={J_depot[b,0]:.1f} Unserv={J_unserv[b,0]:.1f} Idle={J_idle[b,0]:.1f} | "
-                        f"FinalReward={reward[b,0]:.1f}"
-                    )
+            #         # لاگ کامل reward breakdown
+            #         self.logger.info(
+            #             f"[EPISODE_END] B{b:03d} | "
+            #             f"Served={total_served}/{total_feasible} ({serving_rate:.1f}%) | "
+            #             f"PickupLate={pickup_late_cnt[b,0]:.0f} | "
+            #             f"DepotLate={late_at_depot_cnt[b,0]:.0f} | "
+            #             f"Unserved={unserved_cnt[b,0]:.0f} | "
+            #             f"Idle={idle_cnt[b,0]:.0f} | "
+            #             f"Rewards: Depot={J_depot[b,0]:.1f} Unserv={J_unserv[b,0]:.1f} Idle={J_idle[b,0]:.1f} | "
+            #             f"FinalReward={reward[b,0]:.1f}"
+            #         )
             self.last_reward = reward.clone()
+            
 
-        if reward.dim()==1:
-            reward = reward.unsqueeze(-1)
+        
+
+        
+        # if was_done.any():
+        #     print(f"idle steps: {int(was_done.sum())}  "
+        #     f"rewards there: {reward[was_done].abs().sum().item():.3f}")        
         return reward
 
 
@@ -578,7 +590,6 @@ class PVRP_Environment:
 
     def call_ortools(data):
         routes = ort_solve(data)
-        # حالا هزینه‌ها و پنالتی‌ها را حساب می‌کنیم
 
         costs = []
         penalties = []
@@ -596,7 +607,6 @@ class PVRP_Environment:
 
             for route in route_set:
                 if not route:
-                    # ماشین بیکار → جریمه Idle
                     penalty += 10 * 20  # α₅ * scale = 200
                     continue
 
@@ -619,3 +629,5 @@ class PVRP_Environment:
             penalties.append(penalty)
 
         return routes, costs, penalties
+
+

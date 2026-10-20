@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 """
-PlotNeuralNet visualization for PVRP Actor-Critic Architecture - Version 7 (Final)
-Ambulance Routing Problem with Survival Time Constraints
-
-Changes from v6:
-- Changed "Patients" to "Input (Patients)"
-- Changed "Ambulances" to "Input (Ambulances)"
+PlotNeuralNet visualization for PVRP Actor-Critic Architecture - 
 """
 
 import sys
